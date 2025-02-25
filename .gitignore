@@ -1,0 +1,7 @@
+*.db
+*.log
+*.py[cod]
+*.sqlite3
+/build
+/dist
+/target
