@@ -1,5 +1,4 @@
 mod data_codecs;
-mod err;
 mod py_codecs;
 mod storage;
 mod typ;
