@@ -226,14 +226,20 @@ impl Storage {
     }
 }
 
+const INIT_PRAGMAS: &str = "
+PRAGMA journal_mode=WAL;
+PRAGMA synchronous=NORMAL;
+PRAGMA cache_size=1000;
+PRAGMA temp_store=MEMORY;
+";
+
 #[pymethods]
 impl Storage {
     #[new]
     #[pyo3(signature = (path, *, allow_pickle = false))]
     fn new(path: &str, allow_pickle: bool) -> PyResult<Self> {
         let conn = Connection::open(path).map_err(argh)?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")
-            .map_err(argh)?;
+        conn.execute_batch(INIT_PRAGMAS).map_err(argh)?;
         let max_num_binds = conn
             .limit(Limit::SQLITE_LIMIT_VARIABLE_NUMBER)
             .map_err(argh)? as usize;
