@@ -12,24 +12,26 @@ use rusqlite::limits::Limit;
 use rusqlite::types::ValueRef;
 use rusqlite::{params, Connection};
 use rusqlite::{params_from_iter, OptionalExtension};
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::sync::{Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::instrument;
 
-fn string_or_bytestring_as_string(sobs: StringOrByteString) -> eyre::Result<String> {
+type CowStr = Cow<'static, str>;
+
+fn string_or_bytestring_as_string(sobs: StringOrByteString) -> eyre::Result<CowStr> {
     match sobs {
-        Either::Left(s) => Ok(s.to_string()),
-        Either::Right(b) => Ok(std::str::from_utf8(&b)
-            .wrap_err("bytestring didn't parse as utf-8")?
-            .to_string()),
+        Either::Left(s) => Ok(Cow::from(s)),
+        Either::Right(b) => {
+            let s = std::str::from_utf8(&b).wrap_err("bytestring didn't parse as utf-8")?;
+            Ok(Cow::from(s.to_owned()))
+        }
     }
 }
 
-fn string_or_bytestring_vector_as_string_vector(
-    sobses: Vec<StringOrByteString>,
-) -> eyre::Result<Vec<String>> {
-    let mut res = vec![];
+fn strings_or_bytestrings_as_strings(sobses: Vec<StringOrByteString>) -> eyre::Result<Vec<CowStr>> {
+    let mut res = Vec::with_capacity(sobses.len());
     for sobs in sobses {
         res.push(string_or_bytestring_as_string(sobs)?);
     }
@@ -43,25 +45,25 @@ struct StorageSettings {
 #[pyclass]
 pub struct Storage {
     conn: Mutex<Option<Connection>>,
-    known_namespaces: RwLock<HashSet<String>>,
+    known_namespaces: RwLock<HashSet<CowStr>>,
     settings: StorageSettings,
     max_num_binds: usize,
 }
 
 struct InternalInsertTriple {
-    key: String,
+    key: CowStr,
     codecs_blob: CodecsBlob,
     value: Vec<u8>,
 }
 
 struct InternalStoredRecord {
-    key: Option<String>, // we may have not queried this
+    key: Option<CowStr>, // we may have not queried this
     codecs_blob: CodecsBlob,
     value: Vec<u8>,
     expires_at_ms: Option<i64>,
 }
 struct InternalStoredDataAndMnemonic {
-    key: Option<String>, // we may have not queried this
+    key: Option<CowStr>, // we may have not queried this
     #[allow(dead_code)]
     expires_at_ms: Option<i64>,
     data_and_mnemonic: DataAndMnemonic,
@@ -72,7 +74,7 @@ impl InternalStoredDataAndMnemonic {
         self,
         py: Python<'py>,
         s: &StorageSettings,
-    ) -> PyResult<(Option<String>, Bound<'py, PyAny>)> {
+    ) -> PyResult<(Option<CowStr>, Bound<'py, PyAny>)> {
         let py_val =
             decode_to_python_from_data_and_mnemonic(py, self.data_and_mnemonic, s.allow_pickle)?;
         Ok((self.key, py_val))
@@ -149,7 +151,7 @@ impl Storage {
         drop(known_namespaces);
         let mut known_namespaces = self.known_namespaces.write().unwrap();
         ensure_namespace_table(conn_lock, namespace)?;
-        known_namespaces.insert(namespace.to_string());
+        known_namespaces.insert(Cow::from(namespace.to_owned()));
         Ok(())
     }
 
@@ -180,7 +182,7 @@ impl Storage {
                 value: data_encoded,
             } = iit;
             stmt.execute(params![
-                key,
+                key.as_ref(),
                 codecs_blob.as_slice(),
                 data_encoded,
                 now_ms,
@@ -195,7 +197,7 @@ impl Storage {
 
     #[inline]
     #[instrument(skip_all)]
-    fn internal_delete(&self, namespace: String, keys: &[String]) -> PyResult<usize> {
+    fn internal_delete(&self, namespace: CowStr, keys: &[CowStr]) -> PyResult<usize> {
         let maybe_conn = self.conn.lock().unwrap();
         let conn = maybe_conn
             .as_ref()
@@ -208,7 +210,7 @@ impl Storage {
                 "DELETE FROM tl_{} WHERE key IN ({})",
                 namespace, placeholders
             );
-            match conn.execute(query, params_from_iter(keys.iter())) {
+            match conn.execute(query, params_from_iter(keys.iter().map(AsRef::as_ref))) {
                 Ok(rows) => {
                     n += rows;
                 }
@@ -294,7 +296,7 @@ impl Storage {
                 codecs_blob,
                 value: data_encoded,
             };
-            self.internal_insert(&namespace, now, expires_at, &[iit])?;
+            self.internal_insert(namespace.as_ref(), now, expires_at, &[iit])?;
             Ok(())
         })
     }
@@ -317,7 +319,7 @@ impl Storage {
                 ))
                 .map_err(argh)?;
             let isr = stmt
-                .query_row(params![key], |row| {
+                .query_row(params![key.as_ref()], |row| {
                     let codecs_blob = match row.get_ref(1)? {
                         ValueRef::Blob(v) => CodecsBlob::from_slice(v),
                         _ => panic!("invalid codec blob type"),
@@ -366,7 +368,7 @@ impl Storage {
                 ))
                 .map_err(argh)?;
             let exists: i64 = stmt
-                .query_row(params![key], |row| row.get(0))
+                .query_row(params![key.as_ref()], |row| row.get(0))
                 .optional()
                 .map_err(argh)?
                 .unwrap_or(0);
@@ -380,7 +382,7 @@ impl Storage {
         namespace: StringOrByteString,
         keys: Vec<StringOrByteString>,
     ) -> PyResult<Py<PyFrozenSet>> {
-        let keys = string_or_bytestring_vector_as_string_vector(keys)?;
+        let keys = strings_or_bytestrings_as_strings(keys)?;
         let namespace = string_or_bytestring_as_string(namespace)?;
         let extant_keys = py.allow_threads(|| {
             let maybe_conn = self.conn.lock().unwrap();
@@ -396,7 +398,9 @@ impl Storage {
                 );
                 let mut stmt = conn.prepare(&query).map_err(argh)?;
                 let keys = stmt
-                    .query_map(params_from_iter(keys.iter()), |row| row.get(0))
+                    .query_map(params_from_iter(keys.iter().map(AsRef::as_ref)), |row| {
+                        row.get(0)
+                    })
                     .map_err(argh)?
                     .collect::<Result<Vec<String>, _>>()
                     .map_err(argh)?;
@@ -419,7 +423,7 @@ impl Storage {
         namespace: StringOrByteString,
         keys: Vec<StringOrByteString>,
     ) -> PyResult<usize> {
-        let keys = string_or_bytestring_vector_as_string_vector(keys)?;
+        let keys = strings_or_bytestrings_as_strings(keys)?;
         let namespace = string_or_bytestring_as_string(namespace)?;
         self.internal_delete(namespace, &keys)
     }
@@ -435,7 +439,7 @@ impl Storage {
         let namespace = string_or_bytestring_as_string(namespace)?;
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(argh)?;
         let expires_at = ttl_ms.map(|ttl| now + Duration::from_millis(ttl));
-        let mut keys: Vec<String> = Vec::new();
+        let mut keys: Vec<CowStr> = Vec::new();
         let mut python_values: Vec<DataAndMnemonic> = Vec::new();
         for (key, value) in values.bind(py).iter() {
             let key = key.extract::<StringOrByteString>()?;
@@ -481,7 +485,7 @@ impl Storage {
                     value,
                 });
             }
-            self.internal_insert(&namespace, now, expires_at, &iits)?;
+            self.internal_insert(namespace.as_ref(), now, expires_at, &iits)?;
             Ok(())
         })
     }
@@ -493,7 +497,7 @@ impl Storage {
         namespace: StringOrByteString,
         keys: Vec<StringOrByteString>,
     ) -> PyResult<PyObject> {
-        let keys = string_or_bytestring_vector_as_string_vector(keys)?;
+        let keys = strings_or_bytestrings_as_strings(keys)?;
         let namespace = string_or_bytestring_as_string(namespace)?;
         let isrs = py.allow_threads(|| {
             let maybe_conn = self.conn.lock().unwrap();
@@ -509,18 +513,22 @@ impl Storage {
                 );
                 let mut stmt = conn.prepare(&query).map_err(argh)?;
                 let chunk_recs = stmt
-                    .query_map(rusqlite::params_from_iter(keys.iter()), |row| {
-                        let codecs_blob = match row.get_ref(2)? {
-                            ValueRef::Blob(v) => CodecsBlob::from_slice(v),
-                            _ => panic!("invalid codec blob type"),
-                        };
-                        Ok(InternalStoredRecord {
-                            key: Some(row.get(0)?),
-                            value: row.get(1)?,
-                            codecs_blob,
-                            expires_at_ms: row.get(3)?,
-                        })
-                    })
+                    .query_map(
+                        rusqlite::params_from_iter(keys.iter().map(AsRef::as_ref)),
+                        |row| {
+                            let codecs_blob = match row.get_ref(2)? {
+                                ValueRef::Blob(v) => CodecsBlob::from_slice(v),
+                                _ => panic!("invalid codec blob type"),
+                            };
+                            let key: String = row.get(0)?;
+                            Ok(InternalStoredRecord {
+                                key: Some(Cow::from(key)),
+                                value: row.get(1)?,
+                                codecs_blob,
+                                expires_at_ms: row.get(3)?,
+                            })
+                        },
+                    )
                     .map_err(argh)?
                     .collect::<Result<Vec<InternalStoredRecord>, _>>()
                     .map_err(argh)?;
@@ -535,7 +543,7 @@ impl Storage {
         for isr in isrs {
             // TODO: check expiries
             let (key, py_val) = isr.into_python(py, &self.settings)?;
-            dict.set_item(key.unwrap(), py_val)?;
+            dict.set_item(key.unwrap().as_ref(), py_val)?;
         }
         Ok(dict.into())
     }
@@ -561,7 +569,7 @@ impl Storage {
             let mut stmt = conn.prepare(&query).map_err(argh)?;
             let keys = match like {
                 Some(like) => stmt
-                    .query_map(params![like], |row| row.get(0))
+                    .query_map(params![like.as_ref()], |row| row.get(0))
                     .map_err(argh)?
                     .collect::<Result<Vec<String>, _>>()
                     .map_err(argh)?,
