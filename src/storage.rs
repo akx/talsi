@@ -210,7 +210,8 @@ impl Storage {
                 "DELETE FROM tl_{} WHERE key IN ({})",
                 namespace, placeholders
             );
-            match conn.execute(query, params_from_iter(keys.iter().map(AsRef::as_ref))) {
+            let mut stmt = tx.prepare_cached(query).map_err(argh)?;
+            match stmt.execute(params_from_iter(keys.iter().map(AsRef::as_ref))) {
                 Ok(rows) => {
                     n += rows;
                 }
@@ -241,6 +242,7 @@ impl Storage {
     #[pyo3(signature = (path, *, allow_pickle = false))]
     fn new(path: &str, allow_pickle: bool) -> PyResult<Self> {
         let conn = Connection::open(path).map_err(argh)?;
+        conn.set_prepared_statement_cache_capacity(64);
         conn.execute_batch(INIT_PRAGMAS).map_err(argh)?;
         let max_num_binds = conn
             .limit(Limit::SQLITE_LIMIT_VARIABLE_NUMBER)
