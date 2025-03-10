@@ -32,6 +32,7 @@ fn setup_logging() {
 }
 
 #[pymodule]
+#[pyo3(name = "_talsi")]
 fn talsi(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<storage::Storage>()?;
     m.add("TalsiError", py.get_type::<TalsiError>())?;

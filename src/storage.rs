@@ -42,7 +42,7 @@ struct StorageSettings {
     pub allow_pickle: bool,
 }
 
-#[pyclass]
+#[pyclass(subclass, module = "talsi._talsi")]
 pub struct Storage {
     conn: Mutex<Option<Connection>>,
     known_namespaces: RwLock<HashSet<CowStr>>,
