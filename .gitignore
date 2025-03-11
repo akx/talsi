@@ -1,6 +1,7 @@
 *.db
 *.log
 *.py[cod]
+*.so
 *.sqlite3
 /build
 /dist
