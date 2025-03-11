@@ -265,7 +265,7 @@ impl Storage {
         Ok(())
     }
 
-    #[pyo3(signature = (namespace, key, value, ttl_ms=None))]
+    #[pyo3(signature = (namespace, key, value, *, ttl_ms=None))]
     #[instrument(skip_all)]
     fn set(
         &self,
@@ -303,6 +303,7 @@ impl Storage {
         })
     }
 
+    #[pyo3(signature = (namespace, key))]
     fn get(
         &self,
         py: Python<'_>,
@@ -350,6 +351,7 @@ impl Storage {
         }
     }
 
+    #[pyo3(signature = (namespace, key))]
     fn has(
         &self,
         py: Python<'_>,
@@ -378,6 +380,7 @@ impl Storage {
         })
     }
 
+    #[pyo3(signature = (namespace, keys))]
     fn has_many(
         &self,
         py: Python<'_>,
@@ -414,12 +417,14 @@ impl Storage {
         Ok(fz.into())
     }
 
+    #[pyo3(signature = (namespace, key))]
     fn delete(&self, namespace: StringOrByteString, key: StringOrByteString) -> PyResult<usize> {
         let key = string_or_bytestring_as_string(key)?;
         let namespace = string_or_bytestring_as_string(namespace)?;
         self.internal_delete(namespace, &[key])
     }
 
+    #[pyo3(signature = (namespace, keys))]
     fn delete_many(
         &self,
         namespace: StringOrByteString,
@@ -430,7 +435,7 @@ impl Storage {
         self.internal_delete(namespace, &keys)
     }
 
-    #[pyo3(signature = (namespace, values, ttl_ms=None))]
+    #[pyo3(signature = (namespace, values, *, ttl_ms=None))]
     fn set_many(
         &self,
         py: Python<'_>,
@@ -550,7 +555,7 @@ impl Storage {
         Ok(dict.into())
     }
 
-    #[pyo3(signature = (namespace, like=None))]
+    #[pyo3(signature = (namespace, *, like=None))]
     fn list_keys(
         &self,
         py: Python<'_>,
