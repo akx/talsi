@@ -87,7 +87,7 @@ impl InternalStoredRecord {
         let (python_codec_mnemonic, data_codecs) = self
             .codecs_blob
             .split_first()
-            .ok_or_else(|| argh("No codec mnemonic found"))?;
+            .ok_or_else(|| to_talsi_error("No codec mnemonic found"))?;
         if !data_codecs.is_empty() {
             // Decode data codecs in reverse order
             for mnemonic in data_codecs.iter().rev() {
@@ -109,7 +109,7 @@ impl InternalStoredRecord {
 }
 
 #[inline]
-fn argh<T: ToString>(e: T) -> PyErr {
+fn to_talsi_error<T: ToString>(e: T) -> PyErr {
     PyErr::new::<TalsiError, _>(e.to_string())
 }
 
@@ -129,7 +129,7 @@ fn ensure_namespace_table(conn: &Connection, namespace: &str) -> Result<(), PyEr
         ),
         [],
     )
-    .map_err(argh)?;
+    .map_err(to_talsi_error)?;
     conn.execute(
         &format!(
             "CREATE INDEX IF NOT EXISTS tl_{}_key ON tl_{} (key)",
@@ -137,7 +137,7 @@ fn ensure_namespace_table(conn: &Connection, namespace: &str) -> Result<(), PyEr
         ),
         [],
     )
-    .map_err(argh)?;
+    .map_err(to_talsi_error)?;
     Ok(())
 }
 
@@ -190,12 +190,12 @@ impl Storage {
         let maybe_conn = self.conn.lock().unwrap();
         let conn = maybe_conn
             .as_ref()
-            .ok_or_else(|| argh("Connection is closed"))?;
+            .ok_or_else(|| to_talsi_error("Connection is closed"))?;
         self.ensure_namespace_table(conn, namespace)?;
-        let tx = conn.unchecked_transaction().map_err(argh)?;
+        let tx = conn.unchecked_transaction().map_err(to_talsi_error)?;
         let mut stmt = tx
             .prepare_cached(&format!("INSERT OR REPLACE INTO tl_{} (key, codecs, value, created_at_ms, expires_at_ms) VALUES (?, ?, ?, ?, ?)", namespace))
-            .map_err(argh)?;
+            .map_err(to_talsi_error)?;
         for iit in iits {
             let InternalInsertTriple {
                 key,
@@ -209,10 +209,10 @@ impl Storage {
                 now_ms,
                 expires_ms
             ])
-            .map_err(argh)?;
+            .map_err(to_talsi_error)?;
         }
         drop(stmt);
-        tx.commit().map_err(argh)?;
+        tx.commit().map_err(to_talsi_error)?;
         Ok(())
     }
 
@@ -222,8 +222,8 @@ impl Storage {
         let maybe_conn = self.conn.lock().unwrap();
         let conn = maybe_conn
             .as_ref()
-            .ok_or_else(|| argh("Connection is closed"))?;
-        let tx = conn.unchecked_transaction().map_err(argh)?;
+            .ok_or_else(|| to_talsi_error("Connection is closed"))?;
+        let tx = conn.unchecked_transaction().map_err(to_talsi_error)?;
         let mut n = 0;
         for keys in keys.chunks(self.max_num_binds) {
             let placeholders = keys.iter().map(|_| "?").collect::<Vec<_>>().join(",");
@@ -231,7 +231,7 @@ impl Storage {
                 "DELETE FROM tl_{} WHERE key IN ({})",
                 namespace, placeholders
             );
-            let mut stmt = match ignore_no_such_table(tx.prepare(query)).map_err(argh)? {
+            let mut stmt = match ignore_no_such_table(tx.prepare(query)).map_err(to_talsi_error)? {
                 StatementResult::Stmt(stmt) => stmt,
                 StatementResult::NoSuchTable => {
                     return Ok(0);
@@ -245,12 +245,12 @@ impl Storage {
                     if e.to_string().contains("no such table") {
                         return Ok(0);
                     } else {
-                        return Err(argh(e));
+                        return Err(to_talsi_error(e));
                     }
                 }
             }
         }
-        tx.commit().map_err(argh)?;
+        tx.commit().map_err(to_talsi_error)?;
         Ok(n)
     }
 }
@@ -267,12 +267,12 @@ impl Storage {
     #[new]
     #[pyo3(signature = (path, *, allow_pickle = false))]
     fn new(path: &str, allow_pickle: bool) -> PyResult<Self> {
-        let conn = Connection::open(path).map_err(argh)?;
+        let conn = Connection::open(path).map_err(to_talsi_error)?;
         conn.set_prepared_statement_cache_capacity(64);
-        conn.execute_batch(INIT_PRAGMAS).map_err(argh)?;
+        conn.execute_batch(INIT_PRAGMAS).map_err(to_talsi_error)?;
         let max_num_binds = conn
             .limit(Limit::SQLITE_LIMIT_VARIABLE_NUMBER)
-            .map_err(argh)? as usize;
+            .map_err(to_talsi_error)? as usize;
 
         Ok(Storage {
             conn: Mutex::new(Some(conn)),
@@ -305,7 +305,9 @@ impl Storage {
         py.allow_threads(|| {
             let key = string_or_bytestring_as_string(key)?;
             let namespace = string_or_bytestring_as_string(namespace)?;
-            let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(argh)?;
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(to_talsi_error)?;
             let expires_at = ttl_ms.map(|ttl| now + Duration::from_millis(ttl));
             let data_enc_result = get_best_data_encoding(&py_enc_result.data)?;
             let DataAndMnemonics {
@@ -340,12 +342,14 @@ impl Storage {
             let key = string_or_bytestring_as_string(key)?;
             let namespace = string_or_bytestring_as_string(namespace)?;
             let maybe_conn = self.conn.lock().unwrap();
-            let conn = maybe_conn.as_ref().ok_or(argh("Connection is closed"))?;
+            let conn = maybe_conn
+                .as_ref()
+                .ok_or(to_talsi_error("Connection is closed"))?;
             let mut stmt = match ignore_no_such_table(conn.prepare_cached(&format!(
                 "SELECT value, codecs, expires_at_ms FROM tl_{} WHERE key = ? LIMIT 1",
                 namespace
             )))
-            .map_err(argh)?
+            .map_err(to_talsi_error)?
             {
                 StatementResult::Stmt(stmt) => stmt,
                 StatementResult::NoSuchTable => {
@@ -366,7 +370,7 @@ impl Storage {
                     })
                 })
                 .optional()
-                .map_err(argh)?;
+                .map_err(to_talsi_error)?;
             match isr {
                 Some(isr) => Ok(Some(isr.into_data_codecs_decoded()?)),
                 None => Ok(None),
@@ -395,12 +399,12 @@ impl Storage {
             let maybe_conn = self.conn.lock().unwrap();
             let conn = maybe_conn
                 .as_ref()
-                .ok_or_else(|| argh("Connection is closed"))?;
+                .ok_or_else(|| to_talsi_error("Connection is closed"))?;
             let mut stmt = match ignore_no_such_table(conn.prepare_cached(&format!(
                 "SELECT EXISTS(SELECT 1 FROM tl_{} WHERE key = ? LIMIT 1)",
                 namespace
             )))
-            .map_err(argh)?
+            .map_err(to_talsi_error)?
             {
                 StatementResult::Stmt(stmt) => stmt,
                 StatementResult::NoSuchTable => {
@@ -410,7 +414,7 @@ impl Storage {
             let exists: i64 = stmt
                 .query_row(params![key.as_ref()], |row| row.get(0))
                 .optional()
-                .map_err(argh)?
+                .map_err(to_talsi_error)?
                 .unwrap_or(0);
             Ok::<bool, PyErr>(exists != 0)
         })
@@ -429,7 +433,7 @@ impl Storage {
             let maybe_conn = self.conn.lock().unwrap();
             let conn = maybe_conn
                 .as_ref()
-                .ok_or_else(|| argh("Connection is closed"))?;
+                .ok_or_else(|| to_talsi_error("Connection is closed"))?;
             let mut extant_keys: HashSet<String> = HashSet::with_capacity(keys.len());
             for keys in keys.chunks(self.max_num_binds) {
                 let placeholders = keys.iter().map(|_| "?").collect::<Vec<_>>().join(",");
@@ -437,19 +441,20 @@ impl Storage {
                     "SELECT key FROM tl_{} WHERE key IN ({})",
                     namespace, placeholders
                 );
-                let mut stmt = match ignore_no_such_table(conn.prepare(&query)).map_err(argh)? {
-                    StatementResult::Stmt(stmt) => stmt,
-                    StatementResult::NoSuchTable => {
-                        return Ok::<HashSet<String>, PyErr>(extant_keys);
-                    }
-                };
+                let mut stmt =
+                    match ignore_no_such_table(conn.prepare(&query)).map_err(to_talsi_error)? {
+                        StatementResult::Stmt(stmt) => stmt,
+                        StatementResult::NoSuchTable => {
+                            return Ok::<HashSet<String>, PyErr>(extant_keys);
+                        }
+                    };
                 let keys = stmt
                     .query_map(params_from_iter(keys.iter().map(AsRef::as_ref)), |row| {
                         row.get(0)
                     })
-                    .map_err(argh)?
+                    .map_err(to_talsi_error)?
                     .collect::<Result<Vec<String>, _>>()
-                    .map_err(argh)?;
+                    .map_err(to_talsi_error)?;
                 extant_keys.extend(keys);
             }
             Ok::<HashSet<String>, PyErr>(extant_keys)
@@ -485,7 +490,9 @@ impl Storage {
         ttl_ms: Option<u64>,
     ) -> PyResult<()> {
         let namespace = string_or_bytestring_as_string(namespace)?;
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(argh)?;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(to_talsi_error)?;
         let expires_at = ttl_ms.map(|ttl| now + Duration::from_millis(ttl));
         let mut keys: Vec<CowStr> = Vec::new();
         let mut python_values: Vec<DataAndMnemonic> = Vec::new();
@@ -551,7 +558,7 @@ impl Storage {
             let maybe_conn = self.conn.lock().unwrap();
             let conn = maybe_conn
                 .as_ref()
-                .ok_or_else(|| argh("Connection is closed"))?;
+                .ok_or_else(|| to_talsi_error("Connection is closed"))?;
             let mut recs: Vec<InternalStoredRecord> = Vec::new();
             for keys in keys.chunks(self.max_num_binds) {
                 let placeholders = keys.iter().map(|_| "?").collect::<Vec<_>>().join(",");
@@ -559,12 +566,13 @@ impl Storage {
                     "SELECT key, value, codecs, expires_at_ms FROM tl_{} WHERE key IN ({})",
                     namespace, placeholders
                 );
-                let mut stmt = match ignore_no_such_table(conn.prepare(&query)).map_err(argh)? {
-                    StatementResult::Stmt(stmt) => stmt,
-                    StatementResult::NoSuchTable => {
-                        break;
-                    }
-                };
+                let mut stmt =
+                    match ignore_no_such_table(conn.prepare(&query)).map_err(to_talsi_error)? {
+                        StatementResult::Stmt(stmt) => stmt,
+                        StatementResult::NoSuchTable => {
+                            break;
+                        }
+                    };
                 let chunk_recs = stmt
                     .query_map(
                         rusqlite::params_from_iter(keys.iter().map(AsRef::as_ref)),
@@ -582,15 +590,15 @@ impl Storage {
                             })
                         },
                     )
-                    .map_err(argh)?
+                    .map_err(to_talsi_error)?
                     .collect::<Result<Vec<InternalStoredRecord>, _>>()
-                    .map_err(argh)?;
+                    .map_err(to_talsi_error)?;
                 recs.extend(chunk_recs);
             }
             recs.into_par_iter()
                 .map(|isr| isr.into_data_codecs_decoded())
                 .collect::<PyResult<Vec<InternalStoredDataAndMnemonic>>>()
-                .map_err(argh)
+                .map_err(to_talsi_error)
         })?;
         let dict = PyDict::new(py);
         for isr in isrs {
@@ -614,28 +622,29 @@ impl Storage {
             let maybe_conn = self.conn.lock().unwrap();
             let conn = maybe_conn
                 .as_ref()
-                .ok_or_else(|| argh("Connection is closed"))?;
+                .ok_or_else(|| to_talsi_error("Connection is closed"))?;
             let query = match &like {
                 Some(_like) => format!("SELECT key FROM tl_{} WHERE key LIKE ?", namespace),
                 None => format!("SELECT key FROM tl_{}", namespace),
             };
-            let mut stmt = match ignore_no_such_table(conn.prepare(&query)).map_err(argh)? {
-                StatementResult::Stmt(stmt) => stmt,
-                StatementResult::NoSuchTable => {
-                    return Ok::<Vec<String>, PyErr>(Vec::new());
-                }
-            };
+            let mut stmt =
+                match ignore_no_such_table(conn.prepare(&query)).map_err(to_talsi_error)? {
+                    StatementResult::Stmt(stmt) => stmt,
+                    StatementResult::NoSuchTable => {
+                        return Ok::<Vec<String>, PyErr>(Vec::new());
+                    }
+                };
             let keys = match like {
                 Some(like) => stmt
                     .query_map(params![like.as_ref()], |row| row.get(0))
-                    .map_err(argh)?
+                    .map_err(to_talsi_error)?
                     .collect::<Result<Vec<String>, _>>()
-                    .map_err(argh)?,
+                    .map_err(to_talsi_error)?,
                 None => stmt
                     .query_map([], |row| row.get(0))
-                    .map_err(argh)?
+                    .map_err(to_talsi_error)?
                     .collect::<Result<Vec<String>, _>>()
-                    .map_err(argh)?,
+                    .map_err(to_talsi_error)?,
             };
             Ok::<Vec<String>, PyErr>(keys)
         })
