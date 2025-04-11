@@ -157,3 +157,13 @@ def test_sqlite3_interop(tmp_path):
         # In reality, you can't read data out of a Talsi database like this;
         # you'd have to look at the codec chain too.
         assert dict(cursor.fetchall()) == {"avain": b"8", "key": b"value"}
+
+
+def test_get_from_empty(tmp_path):
+    db_path = str(tmp_path / "empty.db")
+    with talsi.Storage(db_path) as storage:
+        assert storage.get("foo", "bar") is None
+        assert storage.has("foo", "bar") is False
+        assert storage.has_many("foo", ["bar", "baz"]) == frozenset()
+        assert storage.get_many("foo", ["bar", "baz"]) == {}
+        assert storage.list_keys("foo") == []
