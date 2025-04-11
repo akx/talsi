@@ -141,6 +141,27 @@ fn ensure_namespace_table(conn: &Connection, namespace: &str) -> Result<(), PyEr
     Ok(())
 }
 
+enum StatementResult<S> {
+    Stmt(S),
+    NoSuchTable,
+}
+
+fn ignore_no_such_table<S>(
+    r: Result<S, rusqlite::Error>,
+) -> Result<StatementResult<S>, rusqlite::Error> {
+    match r {
+        Ok(stmt) => Ok(StatementResult::Stmt(stmt)),
+        Err(e) => match e {
+            rusqlite::Error::SqliteFailure(_, Some(ref reason_string))
+                if reason_string.starts_with("no such table:") =>
+            {
+                Ok(StatementResult::NoSuchTable)
+            }
+            _ => Err(e),
+        },
+    }
+}
+
 impl Storage {
     fn ensure_namespace_table(&self, conn_lock: &Connection, namespace: &str) -> Result<(), PyErr> {
         let known_namespaces = self.known_namespaces.read().unwrap();
@@ -210,7 +231,12 @@ impl Storage {
                 "DELETE FROM tl_{} WHERE key IN ({})",
                 namespace, placeholders
             );
-            let mut stmt = tx.prepare_cached(query).map_err(argh)?;
+            let mut stmt = match ignore_no_such_table(tx.prepare(query)).map_err(argh)? {
+                StatementResult::Stmt(stmt) => stmt,
+                StatementResult::NoSuchTable => {
+                    return Ok(0);
+                }
+            };
             match stmt.execute(params_from_iter(keys.iter().map(AsRef::as_ref))) {
                 Ok(rows) => {
                     n += rows;
@@ -315,13 +341,18 @@ impl Storage {
             let namespace = string_or_bytestring_as_string(namespace)?;
             let maybe_conn = self.conn.lock().unwrap();
             let conn = maybe_conn.as_ref().ok_or(argh("Connection is closed"))?;
-            let mut stmt = conn
-                .prepare_cached(&format!(
-                    "SELECT value, codecs, expires_at_ms FROM tl_{} WHERE key = ? LIMIT 1",
-                    namespace
-                ))
-                .map_err(argh)?;
-            let isr = stmt
+            let mut stmt = match ignore_no_such_table(conn.prepare_cached(&format!(
+                "SELECT value, codecs, expires_at_ms FROM tl_{} WHERE key = ? LIMIT 1",
+                namespace
+            )))
+            .map_err(argh)?
+            {
+                StatementResult::Stmt(stmt) => stmt,
+                StatementResult::NoSuchTable => {
+                    return Ok(None);
+                }
+            };
+            let isr: Option<InternalStoredRecord> = stmt
                 .query_row(params![key.as_ref()], |row| {
                     let codecs_blob = match row.get_ref(1)? {
                         ValueRef::Blob(v) => CodecsBlob::from_slice(v),
@@ -365,12 +396,17 @@ impl Storage {
             let conn = maybe_conn
                 .as_ref()
                 .ok_or_else(|| argh("Connection is closed"))?;
-            let mut stmt = conn
-                .prepare_cached(&format!(
-                    "SELECT EXISTS(SELECT 1 FROM tl_{} WHERE key = ? LIMIT 1)",
-                    namespace
-                ))
-                .map_err(argh)?;
+            let mut stmt = match ignore_no_such_table(conn.prepare_cached(&format!(
+                "SELECT EXISTS(SELECT 1 FROM tl_{} WHERE key = ? LIMIT 1)",
+                namespace
+            )))
+            .map_err(argh)?
+            {
+                StatementResult::Stmt(stmt) => stmt,
+                StatementResult::NoSuchTable => {
+                    return Ok(false);
+                }
+            };
             let exists: i64 = stmt
                 .query_row(params![key.as_ref()], |row| row.get(0))
                 .optional()
@@ -401,7 +437,12 @@ impl Storage {
                     "SELECT key FROM tl_{} WHERE key IN ({})",
                     namespace, placeholders
                 );
-                let mut stmt = conn.prepare(&query).map_err(argh)?;
+                let mut stmt = match ignore_no_such_table(conn.prepare(&query)).map_err(argh)? {
+                    StatementResult::Stmt(stmt) => stmt,
+                    StatementResult::NoSuchTable => {
+                        return Ok::<HashSet<String>, PyErr>(extant_keys);
+                    }
+                };
                 let keys = stmt
                     .query_map(params_from_iter(keys.iter().map(AsRef::as_ref)), |row| {
                         row.get(0)
@@ -518,7 +559,12 @@ impl Storage {
                     "SELECT key, value, codecs, expires_at_ms FROM tl_{} WHERE key IN ({})",
                     namespace, placeholders
                 );
-                let mut stmt = conn.prepare(&query).map_err(argh)?;
+                let mut stmt = match ignore_no_such_table(conn.prepare(&query)).map_err(argh)? {
+                    StatementResult::Stmt(stmt) => stmt,
+                    StatementResult::NoSuchTable => {
+                        break;
+                    }
+                };
                 let chunk_recs = stmt
                     .query_map(
                         rusqlite::params_from_iter(keys.iter().map(AsRef::as_ref)),
@@ -573,7 +619,12 @@ impl Storage {
                 Some(_like) => format!("SELECT key FROM tl_{} WHERE key LIKE ?", namespace),
                 None => format!("SELECT key FROM tl_{}", namespace),
             };
-            let mut stmt = conn.prepare(&query).map_err(argh)?;
+            let mut stmt = match ignore_no_such_table(conn.prepare(&query)).map_err(argh)? {
+                StatementResult::Stmt(stmt) => stmt,
+                StatementResult::NoSuchTable => {
+                    return Ok::<Vec<String>, PyErr>(Vec::new());
+                }
+            };
             let keys = match like {
                 Some(like) => stmt
                     .query_map(params![like.as_ref()], |row| row.get(0))
