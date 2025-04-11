@@ -9,11 +9,11 @@ name = "talsi"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.24.0", features = ["extension-module", "eyre", "either"] }
+pyo3 = { version = "0.24.1", features = ["extension-module", "eyre", "either"] }
 rusqlite = { version = "0.34.0", features = ["bundled", "limits"] }
 rayon = "1.10"
 snap = "1.1.1"
-smallvec = "1.14.0"
+smallvec = "1.15.0"
 either = "1.15.0"
 eyre = { version = "0.6.12" }
 tracing = "0.1.41"
