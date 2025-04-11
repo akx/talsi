@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Any, Iterable
+from typing import Any, Iterable, Self
 
 from talsi._talsi import Storage as _Storage
 from talsi._talsi import TalsiError, setup_logging
@@ -44,6 +44,19 @@ class Storage(_Storage):
         """
         keys = self.list_keys(namespace, like=keys_like)
         return self.get_many_batched(namespace, keys, batch_size=batch_size)
+
+    def __enter__(self) -> Self:
+        """
+        Enter the context manager, returning the Storage instance.
+        """
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """
+        Exit the context manager, closing the Storage instance.
+        """
+        self.close()
+        return
 
 
 class Namespace:
