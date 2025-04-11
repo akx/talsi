@@ -237,7 +237,8 @@ impl Storage {
                     return Ok(0);
                 }
             };
-            match stmt.execute(params_from_iter(keys.iter().map(AsRef::as_ref))) {
+            let res = stmt.execute(params_from_iter(keys.iter().map(AsRef::as_ref)));
+            match res {
                 Ok(rows) => {
                     n += rows;
                 }
