@@ -1,17 +1,17 @@
+use crate::TalsiError;
 use crate::data_codecs::{decode_from_data_and_mnemonic, get_best_data_encoding};
 use crate::py_codecs::{decode_to_python_from_data_and_mnemonic, get_best_py_encoding};
 use crate::typ::{CodecsBlob, DataAndMnemonic, DataAndMnemonics, StringOrByteString};
-use crate::TalsiError;
 use either::Either;
 use eyre::Context;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyFrozenSet};
-use pyo3::{pyclass, pymethods, Bound, Py, PyAny, PyErr, PyObject, PyResult, Python};
+use pyo3::{Bound, Py, PyAny, PyErr, PyObject, PyResult, Python, pyclass, pymethods};
 use rayon::prelude::*;
 use rusqlite::limits::Limit;
 use rusqlite::types::ValueRef;
-use rusqlite::{params, Connection};
-use rusqlite::{params_from_iter, OptionalExtension};
+use rusqlite::{Connection, params};
+use rusqlite::{OptionalExtension, params_from_iter};
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::sync::{Mutex, RwLock};
@@ -113,7 +113,7 @@ fn to_talsi_error<T: ToString>(e: T) -> PyErr {
     PyErr::new::<TalsiError, _>(e.to_string())
 }
 
-fn ensure_namespace_table(conn: &Connection, namespace: &str) -> Result<(), PyErr> {
+fn ensure_namespace_table(conn: &Connection, namespace: &str) -> PyResult<()> {
     conn.execute(
         &format!(
             "CREATE TABLE IF NOT EXISTS tl_{} (
@@ -163,7 +163,7 @@ fn ignore_no_such_table<S>(
 }
 
 impl Storage {
-    fn ensure_namespace_table(&self, conn_lock: &Connection, namespace: &str) -> Result<(), PyErr> {
+    fn ensure_namespace_table(&self, conn_lock: &Connection, namespace: &str) -> PyResult<()> {
         let known_namespaces = self.known_namespaces.read().unwrap();
         // If we've already created the table, don't do it again.
         if known_namespaces.contains(namespace) {
@@ -184,7 +184,7 @@ impl Storage {
         now: Duration,
         expires_at: Option<Duration>,
         iits: &[InternalInsertTriple],
-    ) -> Result<(), PyErr> {
+    ) -> PyResult<usize> {
         let now_ms = now.as_millis() as i64;
         let expires_ms = expires_at.map(|t| t.as_millis() as i64);
         let maybe_conn = self.conn.lock().unwrap();
@@ -213,7 +213,7 @@ impl Storage {
         }
         drop(stmt);
         tx.commit().map_err(to_talsi_error)?;
-        Ok(())
+        Ok(iits.len())
     }
 
     #[inline]
@@ -489,7 +489,7 @@ impl Storage {
         namespace: StringOrByteString,
         values: Py<PyDict>,
         ttl_ms: Option<u64>,
-    ) -> PyResult<()> {
+    ) -> PyResult<usize> {
         let namespace = string_or_bytestring_as_string(namespace)?;
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -541,8 +541,7 @@ impl Storage {
                     value,
                 });
             }
-            self.internal_insert(namespace.as_ref(), now, expires_at, &iits)?;
-            Ok(())
+            self.internal_insert(namespace.as_ref(), now, expires_at, &iits)
         })
     }
 
