@@ -2,6 +2,7 @@ import contextlib
 import sqlite3
 import threading
 import time
+from collections import Counter
 
 import pytest
 import talsi
@@ -167,3 +168,15 @@ def test_get_from_empty(tmp_path):
         assert storage.has_many("foo", ["bar", "baz"]) == frozenset()
         assert storage.get_many("foo", ["bar", "baz"]) == {}
         assert storage.list_keys("foo") == []
+
+
+def test_irregular_types(tmp_path):
+    db_path = str(tmp_path / "empty.db")
+    c = Counter(["bar", "bar", "baz", "baz", "baz"])
+    with talsi.Storage(db_path) as storage:
+        assert storage.set_many("foo", c) == len(c) == 2
+        # TODO: support a generator here instead
+        assert storage.get_many("foo", ["b" + suffix for suffix in ("ar", "az")]) == {
+            "bar": 2,
+            "baz": 3,
+        }
