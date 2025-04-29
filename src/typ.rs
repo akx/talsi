@@ -1,5 +1,5 @@
 use either::Either;
-use smallvec::{smallvec, SmallVec};
+use smallvec::{SmallVec, smallvec};
 
 pub(crate) type StringOrByteString = Either<String, Vec<u8>>;
 
