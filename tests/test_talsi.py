@@ -180,3 +180,107 @@ def test_irregular_types(tmp_path):
             "bar": 2,
             "baz": 3,
         }
+
+
+def test_namespace_names_with_special_characters(tmp_path):
+    """Test that namespace names with non-SQL-identifier characters work correctly."""
+    db_path = str(tmp_path / "special_chars.db")
+
+    # Test data
+    values = [
+        "hige",
+        {"test_key": "test_value", "another_key": 42},
+        "aunt",
+    ]
+
+    with talsi.Storage(db_path) as storage:
+        problematic_namespaces = [
+            "gallery-html-raw",  # Issue #5
+            "namespace-with-hyphens",
+            "namespace with spaces",
+            "namespace.with.dots",
+            "namespace@with@symbols",
+            "namespace/with/slashes",
+            "namespace\\with\\backslashes",
+            "namespace(with)parens",
+            "namespace[with]brackets",
+            "namespace{with}braces",
+            "namespace:with:colons",
+            "namespace;with;semicolons",
+            "namespace,with,commas",
+            "namespace'with'quotes",
+            "namespace`with`backticks",
+            "namespace|with|pipes",
+            "namespace<with>angles",
+            "namespace+with+plus",
+            "namespace=with=equals",
+            "namespace%with%percent",
+            "namespace&with&ampersand",
+            "namespace*with*stars",
+            "namespace#with#hash",
+            "namespace!with!exclamation",
+            "namespace?with?question",
+            "namespace~with~tilde",
+            "namespace^with^caret",
+            "123numeric_start",  # starts with number
+            "---...@@@",
+            "namespace_with_ünïcödé_characters",
+            'double"quote',
+            "",
+        ]
+
+        # Test SQL reserved words as namespaces
+        sql_keywords = [
+            "select",
+            "insert",
+            "update",
+            "delete",
+            "create",
+            "drop",
+            "alter",
+            "table",
+            "index",
+            "view",
+            "database",
+            "schema",
+            "from",
+            "where",
+            "group",
+            "order",
+            "having",
+            "limit",
+            "offset",
+            "union",
+            "join",
+            "primary",
+            "key",
+            "foreign",
+            "references",
+            "unique",
+            "constraint",
+        ]
+
+        # Test each problematic namespace
+        for namespace in problematic_namespaces + sql_keywords:
+            # Test basic operations
+            storage.set(namespace, "test_key", "test_value")
+            assert storage.get(namespace, "test_key") == "test_value"
+            assert storage.has(namespace, "test_key") is True
+
+            # Test batch operations
+            batch_data = {f"key_{i}": value for i, value in enumerate(values)}
+            storage.set_many(namespace, batch_data)
+            retrieved_batch = storage.get_many(namespace, list(batch_data.keys()))
+            assert retrieved_batch == batch_data
+
+            # Test list_keys
+            keys = storage.list_keys(namespace)
+            expected_keys = {"test_key"} | set(batch_data.keys())
+            assert set(keys) == expected_keys
+
+            # Test has_many
+            has_result = storage.has_many(namespace, list(expected_keys))
+            assert has_result == expected_keys
+
+            # Clean up for next test
+            storage.delete_many(namespace, list(expected_keys))
