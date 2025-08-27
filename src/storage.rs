@@ -13,12 +13,39 @@ use rusqlite::types::ValueRef;
 use rusqlite::{Connection, params};
 use rusqlite::{OptionalExtension, params_from_iter};
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::instrument;
 
 type CowStr = Cow<'static, str>;
+
+lazy_static::lazy_static! {
+    static ref QUOTED_TABLE_NAME_CACHE: RwLock<HashMap<CowStr, CowStr>> = RwLock::new(HashMap::new());
+}
+
+#[inline]
+fn get_quoted_table_name(namespace: &str) -> CowStr {
+    if let Ok(cache) = QUOTED_TABLE_NAME_CACHE.read() {
+        if let Some(cached) = cache.get(namespace) {
+            return cached.clone();
+        }
+    }
+
+    let quoted = format!("\"tl_{}\"", namespace.replace('"', "\"\""));
+    let cow_quoted = Cow::from(quoted);
+
+    // Try to cache, but don't fail if we can't
+    let _ = QUOTED_TABLE_NAME_CACHE
+        .write()
+        .map(|mut cache| cache.insert(Cow::from(namespace.to_owned()), cow_quoted.clone()));
+
+    cow_quoted
+}
+
+fn get_quoted_key_index_name(namespace: &str) -> String {
+    format!("\"tl_{}_key\"", namespace.replace('"', "\"\""))
+}
 
 fn string_or_bytestring_as_string(sobs: StringOrByteString) -> eyre::Result<CowStr> {
     match sobs {
@@ -114,9 +141,11 @@ fn to_talsi_error<T: ToString>(e: T) -> PyErr {
 }
 
 fn ensure_namespace_table(conn: &Connection, namespace: &str) -> PyResult<()> {
+    let table_name = get_quoted_table_name(namespace);
+    let quoted_index_name = get_quoted_key_index_name(namespace);
     conn.execute(
         &format!(
-            "CREATE TABLE IF NOT EXISTS tl_{} (
+            "CREATE TABLE IF NOT EXISTS {table_name} (
                     key TEXT NOT NULL,
                     version INTEGER NOT NULL DEFAULT 0,
                     codecs BLOB NOT NULL,
@@ -125,16 +154,12 @@ fn ensure_namespace_table(conn: &Connection, namespace: &str) -> PyResult<()> {
                     expires_at_ms TIMESTAMP,
                     PRIMARY KEY (key, version)
                 )",
-            namespace
         ),
         [],
     )
     .map_err(to_talsi_error)?;
     conn.execute(
-        &format!(
-            "CREATE INDEX IF NOT EXISTS tl_{}_key ON tl_{} (key)",
-            namespace, namespace
-        ),
+        &format!("CREATE INDEX IF NOT EXISTS {quoted_index_name} ON {table_name} (key)"),
         [],
     )
     .map_err(to_talsi_error)?;
@@ -185,6 +210,7 @@ impl Storage {
         expires_at: Option<Duration>,
         iits: &[InternalInsertTriple],
     ) -> PyResult<usize> {
+        let table_name = get_quoted_table_name(namespace);
         let now_ms = now.as_millis() as i64;
         let expires_ms = expires_at.map(|t| t.as_millis() as i64);
         let maybe_conn = self.conn.lock().unwrap();
@@ -194,7 +220,7 @@ impl Storage {
         self.ensure_namespace_table(conn, namespace)?;
         let tx = conn.unchecked_transaction().map_err(to_talsi_error)?;
         let mut stmt = tx
-            .prepare_cached(&format!("INSERT OR REPLACE INTO tl_{} (key, codecs, value, created_at_ms, expires_at_ms) VALUES (?, ?, ?, ?, ?)", namespace))
+            .prepare_cached(&format!("INSERT OR REPLACE INTO {table_name} (key, codecs, value, created_at_ms, expires_at_ms) VALUES (?, ?, ?, ?, ?)"))
             .map_err(to_talsi_error)?;
         for iit in iits {
             let InternalInsertTriple {
@@ -225,12 +251,10 @@ impl Storage {
             .ok_or_else(|| to_talsi_error("Connection is closed"))?;
         let tx = conn.unchecked_transaction().map_err(to_talsi_error)?;
         let mut n = 0;
+        let table_name = get_quoted_table_name(&namespace);
         for keys in keys.chunks(self.max_num_binds) {
             let placeholders = keys.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-            let query = &format!(
-                "DELETE FROM tl_{} WHERE key IN ({})",
-                namespace, placeholders
-            );
+            let query = &format!("DELETE FROM {table_name} WHERE key IN ({placeholders})");
             let mut stmt = match ignore_no_such_table(tx.prepare(query)).map_err(to_talsi_error)? {
                 StatementResult::Stmt(stmt) => stmt,
                 StatementResult::NoSuchTable => {
@@ -334,7 +358,7 @@ impl Storage {
 
     #[pyo3(signature = (namespace, key))]
     fn get(
-        &self,
+        &mut self,
         py: Python<'_>,
         namespace: StringOrByteString,
         key: StringOrByteString,
@@ -342,13 +366,13 @@ impl Storage {
         let idd = py.allow_threads(|| -> PyResult<Option<InternalStoredDataAndMnemonic>> {
             let key = string_or_bytestring_as_string(key)?;
             let namespace = string_or_bytestring_as_string(namespace)?;
+            let table_name = get_quoted_table_name(&namespace);
             let maybe_conn = self.conn.lock().unwrap();
             let conn = maybe_conn
                 .as_ref()
                 .ok_or(to_talsi_error("Connection is closed"))?;
             let mut stmt = match ignore_no_such_table(conn.prepare_cached(&format!(
-                "SELECT value, codecs, expires_at_ms FROM tl_{} WHERE key = ? LIMIT 1",
-                namespace
+                "SELECT value, codecs, expires_at_ms FROM {table_name} WHERE key = ? LIMIT 1",
             )))
             .map_err(to_talsi_error)?
             {
@@ -396,14 +420,14 @@ impl Storage {
     ) -> PyResult<bool> {
         let key = string_or_bytestring_as_string(key)?;
         let namespace = string_or_bytestring_as_string(namespace)?;
+        let table_name = get_quoted_table_name(&namespace);
         py.allow_threads(|| {
             let maybe_conn = self.conn.lock().unwrap();
             let conn = maybe_conn
                 .as_ref()
                 .ok_or_else(|| to_talsi_error("Connection is closed"))?;
             let mut stmt = match ignore_no_such_table(conn.prepare_cached(&format!(
-                "SELECT EXISTS(SELECT 1 FROM tl_{} WHERE key = ? LIMIT 1)",
-                namespace
+                "SELECT EXISTS(SELECT 1 FROM {table_name} WHERE key = ? LIMIT 1)",
             )))
             .map_err(to_talsi_error)?
             {
@@ -430,6 +454,7 @@ impl Storage {
     ) -> PyResult<Py<PyFrozenSet>> {
         let keys = strings_or_bytestrings_as_strings(keys)?;
         let namespace = string_or_bytestring_as_string(namespace)?;
+        let table_name = get_quoted_table_name(&namespace);
         let extant_keys = py.allow_threads(|| {
             let maybe_conn = self.conn.lock().unwrap();
             let conn = maybe_conn
@@ -438,10 +463,7 @@ impl Storage {
             let mut extant_keys: HashSet<String> = HashSet::with_capacity(keys.len());
             for keys in keys.chunks(self.max_num_binds) {
                 let placeholders = keys.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-                let query = format!(
-                    "SELECT key FROM tl_{} WHERE key IN ({})",
-                    namespace, placeholders
-                );
+                let query = format!("SELECT key FROM {table_name} WHERE key IN ({placeholders})");
                 let mut stmt =
                     match ignore_no_such_table(conn.prepare(&query)).map_err(to_talsi_error)? {
                         StatementResult::Stmt(stmt) => stmt,
@@ -554,6 +576,7 @@ impl Storage {
     ) -> PyResult<PyObject> {
         let keys = strings_or_bytestrings_as_strings(keys)?;
         let namespace = string_or_bytestring_as_string(namespace)?;
+        let table_name = get_quoted_table_name(&namespace);
         let isrs = py.allow_threads(|| {
             let maybe_conn = self.conn.lock().unwrap();
             let conn = maybe_conn
@@ -563,8 +586,7 @@ impl Storage {
             for keys in keys.chunks(self.max_num_binds) {
                 let placeholders = keys.iter().map(|_| "?").collect::<Vec<_>>().join(",");
                 let query = format!(
-                    "SELECT key, value, codecs, expires_at_ms FROM tl_{} WHERE key IN ({})",
-                    namespace, placeholders
+                    "SELECT key, value, codecs, expires_at_ms FROM {table_name} WHERE key IN ({placeholders})",
                 );
                 let mut stmt =
                     match ignore_no_such_table(conn.prepare(&query)).map_err(to_talsi_error)? {
@@ -617,6 +639,7 @@ impl Storage {
         like: Option<StringOrByteString>,
     ) -> PyResult<Vec<String>> {
         let namespace = string_or_bytestring_as_string(namespace)?;
+        let table_name = get_quoted_table_name(&namespace);
         let like = like.map(string_or_bytestring_as_string).transpose()?;
         py.allow_threads(|| {
             let maybe_conn = self.conn.lock().unwrap();
@@ -624,8 +647,8 @@ impl Storage {
                 .as_ref()
                 .ok_or_else(|| to_talsi_error("Connection is closed"))?;
             let query = match &like {
-                Some(_like) => format!("SELECT key FROM tl_{} WHERE key LIKE ?", namespace),
-                None => format!("SELECT key FROM tl_{}", namespace),
+                Some(_like) => format!("SELECT key FROM {table_name} WHERE key LIKE ?"),
+                None => format!("SELECT key FROM {table_name}"),
             };
             let mut stmt =
                 match ignore_no_such_table(conn.prepare(&query)).map_err(to_talsi_error)? {
