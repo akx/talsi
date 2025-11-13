@@ -1,7 +1,7 @@
 use crate::typ::DataAndMnemonic;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::{PyAnyMethods, PyStringMethods};
-use pyo3::sync::GILOnceCell;
+use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyBytes, PyCFunction, PyFunction, PyString};
 use pyo3::{Bound, Py, PyAny, PyErr, PyResult, Python};
 use tracing::instrument;
@@ -16,7 +16,7 @@ struct PickleCodec;
 impl PythonToDataCodec for PickleCodec {
     #[instrument(skip_all, name = "pickle_encode")]
     fn encode(py: Python, obj: &Bound<PyAny>) -> PyResult<DataAndMnemonic> {
-        static PICKLE_DUMPS: GILOnceCell<Py<PyCFunction>> = GILOnceCell::new();
+        static PICKLE_DUMPS: PyOnceLock<Py<PyCFunction>> = PyOnceLock::new();
         let bytes = PICKLE_DUMPS
             .import(py, "pickle", "dumps")?
             .call1((obj, 4))?;
@@ -27,7 +27,7 @@ impl PythonToDataCodec for PickleCodec {
     }
     #[instrument(skip_all, name = "pickle_decode")]
     fn decode<'a>(py: Python<'a>, data: &[u8]) -> PyResult<Bound<'a, PyAny>> {
-        static PICKLE_LOADS: GILOnceCell<Py<PyCFunction>> = GILOnceCell::new();
+        static PICKLE_LOADS: PyOnceLock<Py<PyCFunction>> = PyOnceLock::new();
         unsafe {
             let bytes = PyBytes::from_ptr(py, data.as_ptr() as *mut u8, data.len());
             Ok(PICKLE_LOADS
@@ -44,7 +44,7 @@ struct JsonCodec;
 impl PythonToDataCodec for JsonCodec {
     #[instrument(skip_all, name = "json_encode")]
     fn encode(py: Python, obj: &Bound<PyAny>) -> PyResult<DataAndMnemonic> {
-        static JSON_DUMPS: GILOnceCell<Py<PyFunction>> = GILOnceCell::new();
+        static JSON_DUMPS: PyOnceLock<Py<PyFunction>> = PyOnceLock::new();
         let str = JSON_DUMPS.import(py, "json", "dumps")?.call1((obj,))?;
         let bytes = str.extract::<String>()?.into_bytes();
         Ok(DataAndMnemonic {
@@ -55,14 +55,14 @@ impl PythonToDataCodec for JsonCodec {
     #[instrument(skip_all, name = "json_decode")]
     fn decode<'a>(py: Python<'a>, data: &[u8]) -> PyResult<Bound<'a, PyAny>> {
         // Try to use orjson, if it's available, for JSON decoding.
-        static ORJSON_LOADS: GILOnceCell<Option<Py<PyCFunction>>> = GILOnceCell::new();
+        static ORJSON_LOADS: PyOnceLock<Option<Py<PyCFunction>>> = PyOnceLock::new();
         let orjson_loads = ORJSON_LOADS.get_or_try_init(py, || {
             // Ignore import errors, but fail if getattr/cast fails
             if let Ok(orjson_mod) = py.import("orjson") {
                 return Ok::<Option<Py<PyCFunction>>, PyErr>(Some(
                     orjson_mod
                         .getattr("loads")?
-                        .downcast_into::<PyCFunction>()?
+                        .cast_into::<PyCFunction>()?
                         .unbind(),
                 ));
             }
@@ -75,7 +75,7 @@ impl PythonToDataCodec for JsonCodec {
             }
         }
 
-        static JSON_LOADS: GILOnceCell<Py<PyFunction>> = GILOnceCell::new();
+        static JSON_LOADS: PyOnceLock<Py<PyFunction>> = PyOnceLock::new();
         unsafe {
             let bytes = PyBytes::from_ptr(py, data.as_ptr() as *mut u8, data.len());
             Ok(JSON_LOADS
@@ -113,7 +113,7 @@ struct UTF8Codec;
 impl PythonToDataCodec for UTF8Codec {
     #[instrument(skip_all, name = "utf8_encode")]
     fn encode(_py: Python, obj: &Bound<PyAny>) -> PyResult<DataAndMnemonic> {
-        let str = obj.downcast::<PyString>()?;
+        let str = obj.cast::<PyString>()?;
         Ok(DataAndMnemonic {
             data: Vec::from(str.to_str()?),
             codec: Self::MNEMONIC,

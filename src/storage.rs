@@ -6,7 +6,7 @@ use either::Either;
 use eyre::Context;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyFrozenSet};
-use pyo3::{Bound, Py, PyAny, PyErr, PyObject, PyResult, Python, pyclass, pymethods};
+use pyo3::{Bound, Py, PyAny, PyErr, PyResult, Python, pyclass, pymethods};
 use rayon::prelude::*;
 use rusqlite::limits::Limit;
 use rusqlite::types::ValueRef;
@@ -327,7 +327,7 @@ impl Storage {
         ttl_ms: Option<u64>,
     ) -> PyResult<()> {
         let py_enc_result = get_best_py_encoding(py, value.bind(py), self.settings.allow_pickle)?;
-        py.allow_threads(|| {
+        py.detach(|| {
             let key = string_or_bytestring_as_string(key)?;
             let namespace = string_or_bytestring_as_string(namespace)?;
             let now = SystemTime::now()
@@ -363,7 +363,7 @@ impl Storage {
         namespace: StringOrByteString,
         key: StringOrByteString,
     ) -> PyResult<Option<Py<PyAny>>> {
-        let idd = py.allow_threads(|| -> PyResult<Option<InternalStoredDataAndMnemonic>> {
+        let idd = py.detach(|| -> PyResult<Option<InternalStoredDataAndMnemonic>> {
             let key = string_or_bytestring_as_string(key)?;
             let namespace = string_or_bytestring_as_string(namespace)?;
             let table_name = get_quoted_table_name(&namespace);
@@ -421,7 +421,7 @@ impl Storage {
         let key = string_or_bytestring_as_string(key)?;
         let namespace = string_or_bytestring_as_string(namespace)?;
         let table_name = get_quoted_table_name(&namespace);
-        py.allow_threads(|| {
+        py.detach(|| {
             let maybe_conn = self.conn.lock().unwrap();
             let conn = maybe_conn
                 .as_ref()
@@ -455,7 +455,7 @@ impl Storage {
         let keys = strings_or_bytestrings_as_strings(keys)?;
         let namespace = string_or_bytestring_as_string(namespace)?;
         let table_name = get_quoted_table_name(&namespace);
-        let extant_keys = py.allow_threads(|| {
+        let extant_keys = py.detach(|| {
             let maybe_conn = self.conn.lock().unwrap();
             let conn = maybe_conn
                 .as_ref()
@@ -528,7 +528,7 @@ impl Storage {
                 self.settings.allow_pickle,
             )?);
         }
-        py.allow_threads(move || {
+        py.detach(move || {
             let mut dat_vec: Vec<DataAndMnemonics> = Vec::with_capacity(python_values.len());
             python_values
                 .into_par_iter()
@@ -573,11 +573,11 @@ impl Storage {
         py: Python<'_>,
         namespace: StringOrByteString,
         keys: Vec<StringOrByteString>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let keys = strings_or_bytestrings_as_strings(keys)?;
         let namespace = string_or_bytestring_as_string(namespace)?;
         let table_name = get_quoted_table_name(&namespace);
-        let isrs = py.allow_threads(|| {
+        let isrs = py.detach(|| {
             let maybe_conn = self.conn.lock().unwrap();
             let conn = maybe_conn
                 .as_ref()
@@ -641,7 +641,7 @@ impl Storage {
         let namespace = string_or_bytestring_as_string(namespace)?;
         let table_name = get_quoted_table_name(&namespace);
         let like = like.map(string_or_bytestring_as_string).transpose()?;
-        py.allow_threads(|| {
+        py.detach(|| {
             let maybe_conn = self.conn.lock().unwrap();
             let conn = maybe_conn
                 .as_ref()
