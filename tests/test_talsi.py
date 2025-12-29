@@ -284,3 +284,22 @@ def test_namespace_names_with_special_characters(tmp_path):
 
             # Clean up for next test
             storage.delete_many(namespace, list(expected_keys))
+
+
+def test_list_namespaces(tmp_path):
+    """Test that namespace names with non-SQL-identifier characters work correctly."""
+    db_path = str(tmp_path / "special_chars.db")
+
+    # Test data
+    namespaces = [
+        "hige",
+        "gallery-html-raw",
+        "namespace@with@symbols",
+        "   into spaaaaace    ",
+        "delete",  # little Bobby Tables
+    ]
+
+    with talsi.Storage(db_path) as storage:
+        for ns in namespaces:
+            storage.set(ns, "test_key", "test_value")
+        assert set(namespaces) == set(storage.list_namespaces())

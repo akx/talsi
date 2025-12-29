@@ -672,4 +672,22 @@ impl Storage {
             Ok::<Vec<String>, PyErr>(keys)
         })
     }
+
+    fn list_namespaces(&self, py: Python<'_>) -> PyResult<Vec<String>> {
+        py.detach(|| {
+            let maybe_conn = self.conn.lock().unwrap();
+            let conn = maybe_conn
+                .as_ref()
+                .ok_or_else(|| to_talsi_error("Connection is closed"))?;
+            let mut stmt = conn
+                .prepare("SELECT SUBSTR(name, 4) FROM sqlite_master WHERE type='table' AND name LIKE 'tl_%'")
+                .map_err(to_talsi_error)?;
+            let namespaces = stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(to_talsi_error)?
+                .filter_map(|name_result| name_result.ok())
+                .collect::<Vec<String>>();
+            Ok::<Vec<String>, PyErr>(namespaces)
+        })
+    }
 }
