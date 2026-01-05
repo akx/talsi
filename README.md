@@ -16,13 +16,27 @@ over again was getting old. Also, it's a good excuse to write some Rust + PyO3 c
 * Namespaced key-value storage. Keys are UTF-8, values can be anything (either pickleable or JSONable).
 * Fast, thanks to SQLite and Rust.
 * API support for multi-set/multi-get/multi-delete operations
-* Transparent compression for large data (Snappy at present).
+* Transparent compression for large data (Snappy or Zstd (since 0.4.0), configurable).
 * Support for [`orjson`](https://github.com/ijl/orjson/); if it is installed in your Python environment,
   it will be used for fast JSON (de)serialization.
 
 ## Usage
 
-For the time being, please see the tests in `tests/` for usage examples.
+```python
+import talsi
+
+# Create a storage with Snappy compression (default)
+storage = talsi.Storage("mydb.db")
+storage = talsi.Storage("mydb.db", compression="zstd")  # defaults to level 3
+storage = talsi.Storage("mydb.db", compression="zstd:1")  # fastest
+storage = talsi.Storage("mydb.db", compression="zstd:10")  # slower but better compression
+
+# Set and get values
+storage.set("namespace", "key", "value")
+value = storage.get("namespace", "key")
+```
+
+For more examples, please see the tests in `tests/`.
 
 ## License
 

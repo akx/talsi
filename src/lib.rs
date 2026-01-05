@@ -4,6 +4,7 @@ mod snappy_codec;
 mod storage;
 mod typ;
 mod utils;
+mod zstd_codec;
 
 #[cfg(feature = "tracing")]
 use tracing_subscriber;
