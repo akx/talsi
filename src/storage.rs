@@ -1,5 +1,6 @@
-use crate::TalsiError;
-use crate::data_codecs::{decode_from_data_and_mnemonic, get_best_data_encoding};
+use crate::data_codecs::{
+    CompressionAlgorithm, decode_from_data_and_mnemonic, get_best_data_encoding,
+};
 use crate::py_codecs::{decode_to_python_from_data_and_mnemonic, get_best_py_encoding};
 use crate::typ::{CodecsBlob, DataAndMnemonic, DataAndMnemonics, StringOrByteString};
 use crate::utils;
@@ -69,6 +70,7 @@ fn strings_or_bytestrings_as_strings(sobses: Vec<StringOrByteString>) -> eyre::R
 
 struct StorageSettings {
     pub allow_pickle: bool,
+    pub compression: CompressionAlgorithm,
 }
 
 #[pyclass(subclass, module = "talsi._talsi")]
@@ -287,8 +289,9 @@ PRAGMA temp_store=MEMORY;
 #[pymethods]
 impl Storage {
     #[new]
-    #[pyo3(signature = (path, *, allow_pickle = false))]
-    fn new(path: &str, allow_pickle: bool) -> PyResult<Self> {
+    #[pyo3(signature = (path, *, allow_pickle = false, compression = "snappy"))]
+    fn new(path: &str, allow_pickle: bool, compression: &str) -> PyResult<Self> {
+        let compression_algorithm = CompressionAlgorithm::from_str(compression)?;
         let conn = Connection::open(path).map_err(to_talsi_error)?;
         conn.set_prepared_statement_cache_capacity(64);
         conn.execute_batch(INIT_PRAGMAS).map_err(to_talsi_error)?;
@@ -300,7 +303,10 @@ impl Storage {
             conn: Mutex::new(Some(conn)),
             max_num_binds,
             known_namespaces: RwLock::new(HashSet::new()),
-            settings: StorageSettings { allow_pickle },
+            settings: StorageSettings {
+                allow_pickle,
+                compression: compression_algorithm,
+            },
         })
     }
 
@@ -331,7 +337,8 @@ impl Storage {
                 .duration_since(UNIX_EPOCH)
                 .map_err(to_talsi_error)?;
             let expires_at = ttl_ms.map(|ttl| now + Duration::from_millis(ttl));
-            let data_enc_result = get_best_data_encoding(&py_enc_result.data)?;
+            let data_enc_result =
+                get_best_data_encoding(&py_enc_result.data, self.settings.compression)?;
             let DataAndMnemonics {
                 data: data_encoded,
                 codecs: codecs_blob,
@@ -525,6 +532,7 @@ impl Storage {
                 self.settings.allow_pickle,
             )?);
         }
+        let compression = self.settings.compression;
         py.detach(move || {
             let mut dat_vec: Vec<DataAndMnemonics> = Vec::with_capacity(python_values.len());
             python_values
@@ -534,7 +542,8 @@ impl Storage {
                          data: py_enc_data,
                          codec: py_enc_mnemonic,
                      }| {
-                        let data_enc_result = get_best_data_encoding(&py_enc_data).unwrap();
+                        let data_enc_result =
+                            get_best_data_encoding(&py_enc_data, compression).unwrap();
                         match data_enc_result {
                             Some(DataAndMnemonic {
                                 data,

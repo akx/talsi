@@ -7,6 +7,7 @@ from collections import Counter
 import pytest
 import talsi
 
+storage_types = ["pickle:snappy", "json:snappy", "pickle:zstd", "json:zstd"]
 n_test_keys = 500
 
 
@@ -44,14 +45,15 @@ def check_bk_dict_equal(d1, d2):
 
 @pytest.fixture
 def storage(request, tmp_path):
-    if request.param == "pickle":
-        return talsi.Storage(str(tmp_path / "pkl.db"), allow_pickle=True)
-    if request.param == "json":
-        return talsi.Storage(str(tmp_path / "json.db"), allow_pickle=False)
+    type, _, compression = request.param.partition(":")
+    if type == "pickle":
+        return talsi.Storage(str(tmp_path / "pkl.db"), allow_pickle=True, compression=compression)
+    if type == "json":
+        return talsi.Storage(str(tmp_path / "json.db"), allow_pickle=False, compression=compression)
     raise ValueError(f"Unknown storage type: {request.param}")
 
 
-@pytest.mark.parametrize("storage", ["pickle", "json"], indirect=True)
+@pytest.mark.parametrize("storage", storage_types, indirect=True)
 @pytest.mark.parametrize("key_bytes", [False, True], ids=["str", "bytes"])
 @pytest.mark.parametrize("n", [n_test_keys])
 def test_single(storage: talsi.Storage, key_bytes: bool, n: int):
@@ -90,7 +92,7 @@ def test_single(storage: talsi.Storage, key_bytes: bool, n: int):
         assert s1 == s2
 
 
-@pytest.mark.parametrize("storage", ["pickle", "json"], indirect=True)
+@pytest.mark.parametrize("storage", storage_types, indirect=True)
 @pytest.mark.parametrize("key_bytes", [False, True], ids=["str", "bytes"])
 @pytest.mark.parametrize("n", [n_test_keys])
 def test_many(storage: talsi.Storage, key_bytes: bool, n: int):
@@ -131,7 +133,7 @@ def threading_inner(storage: talsi.Storage, i: int, n: int):
         storage.set(f"ns_{i}", str(x), f"hello {x}")
 
 
-@pytest.mark.parametrize("storage", ["pickle", "json"], indirect=True)
+@pytest.mark.parametrize("storage", storage_types, indirect=True)
 def test_threading(storage: talsi.Storage):
     n_threads = 10
     threads = [
@@ -303,3 +305,31 @@ def test_list_namespaces(tmp_path):
         for ns in namespaces:
             storage.set(ns, "test_key", "test_value")
         assert set(namespaces) == set(storage.list_namespaces())
+
+
+def test_invalid_compression_algorithm(tmp_path):
+    """Test that invalid compression algorithm raises an error."""
+    with pytest.raises(talsi.TalsiError) as exc_info:
+        talsi.Storage(str(tmp_path / "invalid.db"), compression="invalid")
+
+    assert "Unknown compression algorithm" in str(exc_info.value)
+
+
+def test_zstd_level_validation(tmp_path):
+    """Test that invalid Zstd compression levels are rejected."""
+    db_path = str(tmp_path / "invalid_level.db")
+
+    # Test level too low
+    with pytest.raises(talsi.TalsiError) as exc_info:
+        talsi.Storage(db_path, compression="zstd:0")
+    assert "must be between 1 and 22" in str(exc_info.value)
+
+    # Test level too high
+    with pytest.raises(talsi.TalsiError) as exc_info:
+        talsi.Storage(db_path, compression="zstd:23")
+    assert "must be between 1 and 22" in str(exc_info.value)
+
+    # Test non-numeric level
+    with pytest.raises(talsi.TalsiError) as exc_info:
+        talsi.Storage(db_path, compression="zstd:abc")
+    assert "Invalid zstd compression level" in str(exc_info.value)
