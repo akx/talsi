@@ -1,5 +1,6 @@
 mod data_codecs;
 mod py_codecs;
+mod snappy_codec;
 mod storage;
 mod typ;
 mod utils;
