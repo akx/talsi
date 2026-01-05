@@ -2,6 +2,7 @@ use crate::TalsiError;
 use crate::data_codecs::{decode_from_data_and_mnemonic, get_best_data_encoding};
 use crate::py_codecs::{decode_to_python_from_data_and_mnemonic, get_best_py_encoding};
 use crate::typ::{CodecsBlob, DataAndMnemonic, DataAndMnemonics, StringOrByteString};
+use crate::utils;
 use either::Either;
 use eyre::Context;
 use pyo3::prelude::*;
@@ -17,6 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::instrument;
+use utils::to_talsi_error;
 
 type CowStr = Cow<'static, str>;
 
@@ -133,11 +135,6 @@ impl InternalStoredRecord {
             expires_at_ms: self.expires_at_ms,
         })
     }
-}
-
-#[inline]
-fn to_talsi_error<T: ToString>(e: T) -> PyErr {
-    PyErr::new::<TalsiError, _>(e.to_string())
 }
 
 fn ensure_namespace_table(conn: &Connection, namespace: &str) -> PyResult<()> {

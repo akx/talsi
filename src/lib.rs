@@ -2,6 +2,7 @@ mod data_codecs;
 mod py_codecs;
 mod storage;
 mod typ;
+mod utils;
 
 #[cfg(feature = "tracing")]
 use tracing_subscriber;
