@@ -1,36 +1,13 @@
+use crate::snappy_codec::SnappyCodec;
 use crate::typ::DataAndMnemonic;
 use pyo3::exceptions::PyValueError;
 use pyo3::{PyErr, PyResult};
-use std::io::{Read, Write};
 use tracing::instrument;
 
-trait DataToDataCodec {
+pub(crate) trait DataToDataCodec {
     fn encode(&self, data: &[u8]) -> PyResult<DataAndMnemonic>;
     fn decode(&self, data: &[u8]) -> PyResult<Vec<u8>>;
     const MNEMONIC: u8;
-}
-struct SnappyCodec;
-impl DataToDataCodec for SnappyCodec {
-    #[instrument(name = "snappy_encode", skip_all)]
-    fn encode(&self, data: &[u8]) -> PyResult<DataAndMnemonic> {
-        let mut wtr = snap::write::FrameEncoder::new(Vec::with_capacity(data.len() / 2));
-        wtr.write_all(data)?;
-        let compressed = wtr.into_inner().unwrap();
-        Ok(DataAndMnemonic {
-            data: compressed,
-            codec: Self::MNEMONIC,
-        })
-    }
-
-    #[instrument(name = "snappy_decode", skip_all)]
-    fn decode(&self, data: &[u8]) -> PyResult<Vec<u8>> {
-        let mut rdr = snap::read::FrameDecoder::new(data);
-        let mut decompressed = Vec::new();
-        rdr.read_to_end(&mut decompressed)?;
-        Ok(decompressed)
-    }
-
-    const MNEMONIC: u8 = b's';
 }
 
 #[instrument(skip_all)]
