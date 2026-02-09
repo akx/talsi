@@ -12,7 +12,7 @@ const MAX_ZSTD_LEVEL: usize = 22; // There is no const API to get this
 type CompressorsRefCell = RefCell<[Option<Compressor<'static>>; MAX_ZSTD_LEVEL + 1]>;
 
 thread_local! {
-    static ZSTD_ENCODERS: CompressorsRefCell = RefCell::new([const { None }; MAX_ZSTD_LEVEL + 1]);
+    static ZSTD_ENCODERS: CompressorsRefCell = const { RefCell::new([const { None }; MAX_ZSTD_LEVEL + 1]) };
 }
 
 pub(crate) struct ZstdCodec {
