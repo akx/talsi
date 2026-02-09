@@ -30,7 +30,7 @@ impl CompressionAlgorithm {
             let level = level_str.parse::<i32>().map_err(|_| {
                 to_talsi_error(format!("Invalid zstd compression level: {}", level_str))
             })?;
-            if level < 1 || level > 22 {
+            if !(1..=22).contains(&level) {
                 return Err(to_talsi_error(format!(
                     "Zstd compression level must be between 1 and 22, got: {}",
                     level

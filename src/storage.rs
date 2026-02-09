@@ -29,11 +29,10 @@ lazy_static::lazy_static! {
 
 #[inline]
 fn get_quoted_table_name(namespace: &str) -> CowStr {
-    if let Ok(cache) = QUOTED_TABLE_NAME_CACHE.read() {
-        if let Some(cached) = cache.get(namespace) {
+    if let Ok(cache) = QUOTED_TABLE_NAME_CACHE.read()
+        && let Some(cached) = cache.get(namespace) {
             return cached.clone();
         }
-    }
 
     let quoted = format!("\"tl_{}\"", namespace.replace('"', "\"\""));
     let cow_quoted = Cow::from(quoted);
