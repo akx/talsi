@@ -41,6 +41,16 @@ class Storage:
     def list_keys(self, namespace: AnyStr, *, like: AnyStr | None = None) -> list[str]: ...
     def list_namespaces(self) -> list[str]: ...
 
+    # Rename
+    def rename(
+        self,
+        namespace: AnyStr,
+        names: dict[AnyStr, AnyStr],
+        *,
+        overwrite: bool = False,
+        must_exist: bool = True,
+    ) -> int: ...
+
     # Delete
     def delete(self, namespace: AnyStr, key: AnyStr) -> int: ...
     def delete_many(self, namespace: AnyStr, keys: list[AnyStr]) -> int: ...
