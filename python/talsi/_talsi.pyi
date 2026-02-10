@@ -1,11 +1,19 @@
-from typing import Any, AnyStr
+from typing import Any, AnyStr, Self
+
+__all__ = ["Storage", "TalsiError", "setup_logging"]
 
 class TalsiError(Exception): ...
 
 def setup_logging() -> None: ...
 
 class Storage:
-    def __init__(self, path: str, *, allow_pickle: bool = False) -> None: ...
+    def __new__(
+        cls,
+        path: str,
+        *,
+        allow_pickle: bool = False,
+        compression: str = "snappy",
+    ) -> Self: ...
     def close(self) -> None: ...
 
     # Create/Update
