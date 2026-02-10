@@ -118,7 +118,7 @@ jobs:
       - name: pytest
         run: |
           uv pip install --find-links=dist talsi
-          uv pip install pytest
+          uv pip install pytest mypy
           pytest -vvv --durations=0
           uv pip install orjson
           pytest -vvv --durations=0
