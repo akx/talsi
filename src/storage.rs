@@ -30,9 +30,10 @@ lazy_static::lazy_static! {
 #[inline]
 fn get_quoted_table_name(namespace: &str) -> CowStr {
     if let Ok(cache) = QUOTED_TABLE_NAME_CACHE.read()
-        && let Some(cached) = cache.get(namespace) {
-            return cached.clone();
-        }
+        && let Some(cached) = cache.get(namespace)
+    {
+        return cached.clone();
+    }
 
     let quoted = format!("\"tl_{}\"", namespace.replace('"', "\"\""));
     let cow_quoted = Cow::from(quoted);
@@ -676,6 +677,166 @@ impl Storage {
             };
             Ok::<Vec<String>, PyErr>(keys)
         })
+    }
+
+    #[pyo3(signature = (namespace, names, *, overwrite=false, must_exist=true))]
+    fn rename(
+        &self,
+        py: Python<'_>,
+        namespace: StringOrByteString,
+        names: Py<PyDict>,
+        overwrite: bool,
+        must_exist: bool,
+    ) -> PyResult<usize> {
+        let mut all_pairs: Vec<(CowStr, CowStr)> = Vec::new();
+        for (old_key, new_key) in names.bind(py).iter() {
+            let old_key = old_key.extract::<StringOrByteString>()?;
+            let new_key = new_key.extract::<StringOrByteString>()?;
+            all_pairs.push((
+                string_or_bytestring_as_string(old_key)?,
+                string_or_bytestring_as_string(new_key)?,
+            ));
+        }
+        let namespace = string_or_bytestring_as_string(namespace)?;
+
+        // Separate no-op pairs (old == new) from real renames
+        let noop_count = all_pairs.iter().filter(|(o, n)| o == n).count();
+        let pairs: Vec<_> = all_pairs.into_iter().filter(|(o, n)| o != n).collect();
+
+        if pairs.is_empty() {
+            return Ok(noop_count);
+        }
+
+        let table_name = get_quoted_table_name(&namespace);
+        let maybe_conn = self.conn.lock().unwrap();
+        let conn = maybe_conn
+            .as_ref()
+            .ok_or_else(|| to_talsi_error("Connection is closed"))?;
+        let tx = conn.unchecked_transaction().map_err(to_talsi_error)?;
+
+        // Check if table exists
+        {
+            let check_query = format!("SELECT 1 FROM {table_name} LIMIT 0");
+            match ignore_no_such_table(tx.prepare(&check_query)).map_err(to_talsi_error)? {
+                StatementResult::Stmt(_) => {}
+                StatementResult::NoSuchTable => {
+                    if must_exist {
+                        return Err(to_talsi_error(format!(
+                            "Key '{}' does not exist",
+                            pairs[0].0
+                        )));
+                    }
+                    return Ok(noop_count);
+                }
+            }
+        };
+
+        let old_names_set: HashSet<String> =
+            pairs.iter().map(|(o, _)| o.as_ref().to_owned()).collect();
+
+        // Find which old keys actually exist
+        let old_names_vec: Vec<&str> = pairs.iter().map(|(o, _)| o.as_ref()).collect();
+        let mut existing_old_keys: HashSet<String> = HashSet::new();
+        for chunk in old_names_vec.chunks(self.max_num_binds) {
+            let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let query = format!("SELECT key FROM {table_name} WHERE key IN ({placeholders})");
+            let mut stmt = tx.prepare(&query).map_err(to_talsi_error)?;
+            let keys = stmt
+                .query_map(params_from_iter(chunk.iter()), |row| {
+                    row.get::<_, String>(0)
+                })
+                .map_err(to_talsi_error)?
+                .collect::<Result<Vec<String>, _>>()
+                .map_err(to_talsi_error)?;
+            existing_old_keys.extend(keys);
+        }
+
+        if must_exist {
+            for old_name in &old_names_vec {
+                if !existing_old_keys.contains(*old_name) {
+                    return Err(to_talsi_error(format!("Key '{}' does not exist", old_name)));
+                }
+            }
+        }
+
+        // Keep only pairs where the old key exists
+        let pairs: Vec<_> = pairs
+            .into_iter()
+            .filter(|(o, _)| existing_old_keys.contains(o.as_ref()))
+            .collect();
+
+        if pairs.is_empty() {
+            tx.commit().map_err(to_talsi_error)?;
+            return Ok(noop_count);
+        }
+
+        // Collect new names that aren't also old names (those get renamed away atomically)
+        let new_names_to_check: Vec<&str> = pairs
+            .iter()
+            .map(|(_, n)| n.as_ref())
+            .filter(|n| !old_names_set.contains(*n))
+            .collect();
+
+        if !new_names_to_check.is_empty() {
+            if !overwrite {
+                // Check that no target keys already exist
+                for chunk in new_names_to_check.chunks(self.max_num_binds) {
+                    let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+                    let query = format!(
+                        "SELECT key FROM {table_name} WHERE key IN ({placeholders}) LIMIT 1"
+                    );
+                    let mut stmt = tx.prepare(&query).map_err(to_talsi_error)?;
+                    let existing: Option<String> = stmt
+                        .query_row(params_from_iter(chunk.iter()), |row| row.get(0))
+                        .optional()
+                        .map_err(to_talsi_error)?;
+                    if let Some(key) = existing {
+                        return Err(to_talsi_error(format!("Key '{}' already exists", key)));
+                    }
+                }
+            } else {
+                // Delete conflicting target keys
+                for chunk in new_names_to_check.chunks(self.max_num_binds) {
+                    let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+                    let query = format!("DELETE FROM {table_name} WHERE key IN ({placeholders})");
+                    tx.execute(&query, params_from_iter(chunk.iter()))
+                        .map_err(to_talsi_error)?;
+                }
+            }
+        }
+
+        // Bulk UPDATE with CASE — 3 bind params per pair (2 in CASE + 1 in WHERE IN)
+        let chunk_size = self.max_num_binds / 3;
+        let mut n_renamed = 0usize;
+        for chunk in pairs.chunks(chunk_size) {
+            let case_clauses: String = chunk
+                .iter()
+                .map(|_| "WHEN ? THEN ?")
+                .collect::<Vec<_>>()
+                .join(" ");
+            let where_placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let query = format!(
+                "UPDATE {table_name} SET key = CASE key {case_clauses} END \
+                 WHERE key IN ({where_placeholders})"
+            );
+
+            let mut param_values: Vec<&str> = Vec::with_capacity(chunk.len() * 3);
+            for (old_name, new_name) in chunk {
+                param_values.push(old_name.as_ref());
+                param_values.push(new_name.as_ref());
+            }
+            for (old_name, _) in chunk {
+                param_values.push(old_name.as_ref());
+            }
+
+            let rows = tx
+                .execute(&query, params_from_iter(param_values.iter()))
+                .map_err(to_talsi_error)?;
+            n_renamed += rows;
+        }
+
+        tx.commit().map_err(to_talsi_error)?;
+        Ok(n_renamed + noop_count)
     }
 
     fn list_namespaces(&self, py: Python<'_>) -> PyResult<Vec<String>> {
