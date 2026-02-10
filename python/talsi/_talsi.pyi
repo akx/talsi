@@ -1,11 +1,19 @@
-from typing import Any, AnyStr
+from typing import Any, AnyStr, Self
+
+__all__ = ["Storage", "TalsiError", "setup_logging"]
 
 class TalsiError(Exception): ...
 
 def setup_logging() -> None: ...
 
 class Storage:
-    def __init__(self, path: str, *, allow_pickle: bool = False) -> None: ...
+    def __new__(
+        cls,
+        path: str,
+        *,
+        allow_pickle: bool = False,
+        compression: str = "snappy",
+    ) -> Self: ...
     def close(self) -> None: ...
 
     # Create/Update
@@ -32,6 +40,16 @@ class Storage:
     def has_many(self, namespace: AnyStr, keys: list[AnyStr]) -> frozenset[str]: ...
     def list_keys(self, namespace: AnyStr, *, like: AnyStr | None = None) -> list[str]: ...
     def list_namespaces(self) -> list[str]: ...
+
+    # Rename
+    def rename(
+        self,
+        namespace: AnyStr,
+        names: dict[AnyStr, AnyStr],
+        *,
+        overwrite: bool = False,
+        must_exist: bool = True,
+    ) -> int: ...
 
     # Delete
     def delete(self, namespace: AnyStr, key: AnyStr) -> int: ...

@@ -19,6 +19,7 @@ module-name = "talsi._talsi"
 
 [dependency-groups]
 dev = [
+    "mypy>=1.19",
     "pytest>=8.3.5",
     "ruff>=0.9.9",
 ]
