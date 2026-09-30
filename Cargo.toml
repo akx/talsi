@@ -9,16 +9,16 @@ name = "talsi"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.28.0", features = ["extension-module", "eyre", "either"] }
-rusqlite = { version = "0.38.0", features = ["bundled", "limits"] }
-rayon = "1.11"
-snap = "1.1.1"
-zstd = { version = "0.13", features = ["default"] }
-smallvec = "1.15.1"
-either = "1.15.0"
-eyre = { version = "0.6.12" }
+pyo3 = { version = "0.29.2", features = ["extension-module", "eyre", "either"] }
+rusqlite = { version = "0.40.2", features = ["bundled", "limits"] }
+rayon = "1.12"
+snap = "1.1.2"
+zstd = { version = "0.14", features = ["default"] }
+smallvec = "1.16.2"
+either = "1.18.0"
+eyre = { version = "0.6.14" }
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.22", optional = true, features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.23", optional = true, features = ["env-filter"] }
 tracing-tree = { version = "0.4.1", optional = true }
 lazy_static = "1.5.0"
 
