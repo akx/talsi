@@ -14,5 +14,6 @@ def test_stubtest():
         ],
         capture_output=True,
         text=True,
+        check=False,  # Checked below
     )
     assert result.returncode == 0, f"stubtest failed:\n{result.stdout}\n{result.stderr}"
