@@ -1,5 +1,6 @@
+from collections.abc import Iterable
 from itertools import islice
-from typing import Any, Iterable
+from typing import Any
 
 
 def batched(iterable: Iterable[Any], batch_size: int) -> Iterable[list[Any]]:
