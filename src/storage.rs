@@ -364,7 +364,7 @@ impl Storage {
 
     #[pyo3(signature = (namespace, key))]
     fn get(
-        &mut self,
+        &self,
         py: Python<'_>,
         namespace: StringOrByteString,
         key: StringOrByteString,
