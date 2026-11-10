@@ -7,11 +7,7 @@ mod utils;
 mod zstd_codec;
 
 #[cfg(feature = "tracing")]
-use tracing_subscriber;
-#[cfg(feature = "tracing")]
 use tracing_subscriber::layer::SubscriberExt;
-#[cfg(feature = "tracing")]
-use tracing_tree;
 
 use pyo3::prelude::*;
 
@@ -30,7 +26,7 @@ fn setup_logging() {
                 .with_timer(tracing_tree::time::Uptime::default()),
         );
         tracing::subscriber::set_global_default(subscriber).unwrap();
-        info!("Logging initialized");
+        tracing::info!("Logging initialized");
     }
 }
 
