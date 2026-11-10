@@ -67,6 +67,13 @@ impl DataToDataCodec for ZstdCodec {
 
     #[instrument(name = "zstd_decode", skip_all)]
     fn decode(&self, data: &[u8]) -> PyResult<Vec<u8>> {
+        // Frames written by `bulk::Compressor` record their content size,
+        // so we can decompress in one shot into an exactly-sized buffer.
+        if let Ok(Some(size)) = zstd::zstd_safe::get_frame_content_size(data) {
+            return zstd::bulk::decompress(data, size as usize).map_err(|e| {
+                PyErr::new::<PyValueError, _>(format!("Zstd decompression failed: {}", e))
+            });
+        }
         let decompressed = zstd::decode_all(data)?;
         Ok(decompressed)
     }
