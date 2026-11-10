@@ -14,7 +14,6 @@ use pyo3::types::{PyDict, PyFrozenSet};
 use pyo3::{Bound, Py, PyAny, PyErr, PyResult, Python, pyclass, pymethods};
 use rayon::prelude::*;
 use rusqlite::limits::Limit;
-use rusqlite::types::ValueRef;
 use rusqlite::{Connection, params};
 use rusqlite::{OptionalExtension, params_from_iter};
 use std::borrow::Cow;
@@ -168,6 +167,10 @@ fn ensure_namespace_table(conn: &Connection, namespace: &str) -> PyResult<()> {
     Ok(())
 }
 
+fn codecs_blob_from_row(row: &rusqlite::Row, idx: usize) -> rusqlite::Result<CodecsBlob> {
+    Ok(CodecsBlob::from_slice(row.get_ref(idx)?.as_blob()?))
+}
+
 enum StatementResult<S> {
     Stmt(S),
     NoSuchTable,
@@ -257,12 +260,13 @@ impl Storage {
         for keys in keys.chunks(self.max_num_binds) {
             let placeholders = keys.iter().map(|_| "?").collect::<Vec<_>>().join(",");
             let query = &format!("DELETE FROM {table_name} WHERE key IN ({placeholders})");
-            let mut stmt = match ignore_no_such_table(tx.prepare(query)).map_err(to_talsi_error)? {
-                StatementResult::Stmt(stmt) => stmt,
-                StatementResult::NoSuchTable => {
-                    return Ok(0);
-                }
-            };
+            let mut stmt =
+                match ignore_no_such_table(tx.prepare_cached(query)).map_err(to_talsi_error)? {
+                    StatementResult::Stmt(stmt) => stmt,
+                    StatementResult::NoSuchTable => {
+                        return Ok(0);
+                    }
+                };
             let res = stmt.execute(params_from_iter(keys.iter().map(AsRef::as_ref)));
             match res {
                 Ok(rows) => {
@@ -398,10 +402,7 @@ impl Storage {
             };
             let isr: Option<InternalStoredRecord> = stmt
                 .query_row(params![key.as_ref()], |row| {
-                    let codecs_blob = match row.get_ref(1)? {
-                        ValueRef::Blob(v) => CodecsBlob::from_slice(v),
-                        _ => panic!("invalid codec blob type"),
-                    };
+                    let codecs_blob = codecs_blob_from_row(row, 1)?;
                     Ok(InternalStoredRecord {
                         key: None,
                         value: row.get(0)?,
@@ -479,13 +480,14 @@ impl Storage {
             for keys in keys.chunks(self.max_num_binds) {
                 let placeholders = keys.iter().map(|_| "?").collect::<Vec<_>>().join(",");
                 let query = format!("SELECT key FROM {table_name} WHERE key IN ({placeholders})");
-                let mut stmt =
-                    match ignore_no_such_table(conn.prepare(&query)).map_err(to_talsi_error)? {
-                        StatementResult::Stmt(stmt) => stmt,
-                        StatementResult::NoSuchTable => {
-                            return Ok::<HashSet<String>, PyErr>(extant_keys);
-                        }
-                    };
+                let mut stmt = match ignore_no_such_table(conn.prepare_cached(&query))
+                    .map_err(to_talsi_error)?
+                {
+                    StatementResult::Stmt(stmt) => stmt,
+                    StatementResult::NoSuchTable => {
+                        return Ok::<HashSet<String>, PyErr>(extant_keys);
+                    }
+                };
                 let keys = stmt
                     .query_map(params_from_iter(keys.iter().map(AsRef::as_ref)), |row| {
                         row.get(0)
@@ -545,26 +547,24 @@ impl Storage {
         }
         let compression = self.settings.compression;
         py.detach(move || {
-            let mut dat_vec: Vec<DataAndMnemonics> = Vec::with_capacity(python_values.len());
-            python_values
+            let dat_vec = python_values
                 .into_par_iter()
                 .map(
                     |PyEncoded {
                          data: py_enc_data,
                          codec: py_enc_mnemonic,
                      }| {
-                        let data_enc_result =
-                            get_best_data_encoding(&py_enc_data, compression).unwrap();
-                        match data_enc_result {
+                        let data_enc_result = get_best_data_encoding(&py_enc_data, compression)?;
+                        Ok(match data_enc_result {
                             Some(DataAndMnemonic {
                                 data,
                                 codec: mnemonic,
                             }) => DataAndMnemonics::from_two(data, py_enc_mnemonic, mnemonic),
                             None => DataAndMnemonics::from_data(py_enc_data, py_enc_mnemonic), // Didn't encode further
-                        }
+                        })
                     },
                 )
-                .collect_into_vec(&mut dat_vec);
+                .collect::<PyResult<Vec<DataAndMnemonics>>>()?;
             let mut iits: Vec<InternalInsertTriple> = Vec::with_capacity(keys.len());
             for (
                 key,
@@ -606,7 +606,7 @@ impl Storage {
                     "SELECT key, value, codecs, expires_at_ms FROM {table_name} WHERE key IN ({placeholders})",
                 );
                 let mut stmt =
-                    match ignore_no_such_table(conn.prepare(&query)).map_err(to_talsi_error)? {
+                    match ignore_no_such_table(conn.prepare_cached(&query)).map_err(to_talsi_error)? {
                         StatementResult::Stmt(stmt) => stmt,
                         StatementResult::NoSuchTable => {
                             break;
@@ -616,10 +616,7 @@ impl Storage {
                     .query_map(
                         rusqlite::params_from_iter(keys.iter().map(AsRef::as_ref)),
                         |row| {
-                            let codecs_blob = match row.get_ref(2)? {
-                                ValueRef::Blob(v) => CodecsBlob::from_slice(v),
-                                _ => panic!("invalid codec blob type"),
-                            };
+                            let codecs_blob = codecs_blob_from_row(row, 2)?;
                             let key: String = row.get(0)?;
                             Ok(InternalStoredRecord {
                                 key: Some(Cow::from(key)),
@@ -668,7 +665,7 @@ impl Storage {
                 None => format!("SELECT key FROM {table_name}"),
             };
             let mut stmt =
-                match ignore_no_such_table(conn.prepare(&query)).map_err(to_talsi_error)? {
+                match ignore_no_such_table(conn.prepare_cached(&query)).map_err(to_talsi_error)? {
                     StatementResult::Stmt(stmt) => stmt,
                     StatementResult::NoSuchTable => {
                         return Ok::<Vec<String>, PyErr>(Vec::new());
@@ -728,7 +725,7 @@ impl Storage {
         // Check if table exists
         {
             let check_query = format!("SELECT 1 FROM {table_name} LIMIT 0");
-            match ignore_no_such_table(tx.prepare(&check_query)).map_err(to_talsi_error)? {
+            match ignore_no_such_table(tx.prepare_cached(&check_query)).map_err(to_talsi_error)? {
                 StatementResult::Stmt(_) => {}
                 StatementResult::NoSuchTable => {
                     if must_exist {
@@ -751,7 +748,7 @@ impl Storage {
         for chunk in old_names_vec.chunks(self.max_num_binds) {
             let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
             let query = format!("SELECT key FROM {table_name} WHERE key IN ({placeholders})");
-            let mut stmt = tx.prepare(&query).map_err(to_talsi_error)?;
+            let mut stmt = tx.prepare_cached(&query).map_err(to_talsi_error)?;
             let keys = stmt
                 .query_map(params_from_iter(chunk.iter()), |row| {
                     row.get::<_, String>(0)
@@ -796,7 +793,7 @@ impl Storage {
                     let query = format!(
                         "SELECT key FROM {table_name} WHERE key IN ({placeholders}) LIMIT 1"
                     );
-                    let mut stmt = tx.prepare(&query).map_err(to_talsi_error)?;
+                    let mut stmt = tx.prepare_cached(&query).map_err(to_talsi_error)?;
                     let existing: Option<String> = stmt
                         .query_row(params_from_iter(chunk.iter()), |row| row.get(0))
                         .optional()
@@ -857,7 +854,7 @@ impl Storage {
                 .as_ref()
                 .ok_or_else(|| to_talsi_error("Connection is closed"))?;
             let mut stmt = conn
-                .prepare("SELECT SUBSTR(name, 4) FROM sqlite_master WHERE type='table' AND name LIKE 'tl_%'")
+                .prepare_cached("SELECT SUBSTR(name, 4) FROM sqlite_master WHERE type='table' AND name LIKE 'tl_%'")
                 .map_err(to_talsi_error)?;
             let namespaces = stmt
                 .query_map([], |row| row.get::<_, String>(0))

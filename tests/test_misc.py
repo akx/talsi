@@ -240,3 +240,16 @@ def test_compression_threshold(
 def test_invalid_compression_threshold(tmp_path):
     with pytest.raises(talsi.TalsiError, match="must be a number"):
         talsi.Storage(str(tmp_path / "nan.db"), compression_threshold=float("nan"))
+
+
+def test_corrupt_codecs_column_raises_talsi_error(tmp_path):
+    db_path = str(tmp_path / "corrupt.db")
+    with talsi.Storage(db_path) as storage:
+        storage.set("ns", "key", "value")
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE tl_ns SET codecs = 'U'")  # TEXT, not BLOB
+    with talsi.Storage(db_path) as storage:
+        with pytest.raises(talsi.TalsiError):
+            storage.get("ns", "key")
+        with pytest.raises(talsi.TalsiError):
+            storage.get_many("ns", ["key"])
