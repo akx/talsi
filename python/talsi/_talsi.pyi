@@ -13,6 +13,7 @@ class Storage:
         *,
         allow_pickle: bool = False,
         compression: str = "snappy",
+        compression_threshold: float = 0.9,
     ) -> Self: ...
     def close(self) -> None: ...
 

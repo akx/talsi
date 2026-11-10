@@ -1,5 +1,6 @@
 use crate::data_codecs::{
-    CompressionAlgorithm, decode_from_data_and_mnemonic, get_best_data_encoding,
+    CompressionAlgorithm, CompressionSettings, decode_from_data_and_mnemonic,
+    get_best_data_encoding,
 };
 use crate::py_codecs::{decode_to_python_from_data_and_mnemonic, get_best_py_encoding};
 use crate::typ::{
@@ -72,7 +73,7 @@ fn strings_or_bytestrings_as_strings(sobses: Vec<StringOrByteString>) -> eyre::R
 
 struct StorageSettings {
     pub allow_pickle: bool,
-    pub compression: CompressionAlgorithm,
+    pub compression: CompressionSettings,
 }
 
 #[pyclass(subclass, module = "talsi._talsi")]
@@ -291,9 +292,17 @@ PRAGMA temp_store=MEMORY;
 #[pymethods]
 impl Storage {
     #[new]
-    #[pyo3(signature = (path, *, allow_pickle = false, compression = "snappy"))]
-    fn new(path: &str, allow_pickle: bool, compression: &str) -> PyResult<Self> {
-        let compression_algorithm = CompressionAlgorithm::from_str(compression)?;
+    #[pyo3(signature = (path, *, allow_pickle = false, compression = "snappy", compression_threshold = 0.9))]
+    fn new(
+        path: &str,
+        allow_pickle: bool,
+        compression: &str,
+        compression_threshold: f64,
+    ) -> PyResult<Self> {
+        let compression = CompressionSettings::new(
+            CompressionAlgorithm::from_str(compression)?,
+            compression_threshold,
+        )?;
         let conn = Connection::open(path).map_err(to_talsi_error)?;
         conn.set_prepared_statement_cache_capacity(64);
         conn.execute_batch(INIT_PRAGMAS).map_err(to_talsi_error)?;
@@ -307,7 +316,7 @@ impl Storage {
             known_namespaces: RwLock::new(HashSet::new()),
             settings: StorageSettings {
                 allow_pickle,
-                compression: compression_algorithm,
+                compression,
             },
         })
     }

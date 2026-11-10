@@ -45,18 +45,50 @@ impl CompressionAlgorithm {
     }
 }
 
+/// Data smaller than this is never compressed.
+const MIN_COMPRESSIBLE_SIZE: usize = 1024;
+
+#[derive(Clone, Copy)]
+pub(crate) struct CompressionSettings {
+    pub algorithm: CompressionAlgorithm,
+    /// Compressed data is only kept if it's at most this fraction of the original size;
+    /// otherwise the data is stored uncompressed. <= 0 always keeps the compressed data.
+    pub threshold: f64,
+}
+
+impl CompressionSettings {
+    pub(crate) fn new(algorithm: CompressionAlgorithm, threshold: f64) -> PyResult<Self> {
+        if threshold.is_nan() {
+            return Err(to_talsi_error("Compression threshold must be a number"));
+        }
+        Ok(Self {
+            algorithm,
+            threshold,
+        })
+    }
+
+    fn is_worth_keeping(&self, original_len: usize, compressed_len: usize) -> bool {
+        self.threshold <= 0.0 || (compressed_len as f64) <= (original_len as f64) * self.threshold
+    }
+}
+
 #[instrument(skip_all)]
 pub fn get_best_data_encoding(
     data: &[u8],
-    algorithm: CompressionAlgorithm,
+    settings: CompressionSettings,
 ) -> PyResult<Option<DataAndMnemonic>> {
-    if data.len() >= 1024 {
-        return match algorithm {
-            CompressionAlgorithm::Snappy => SnappyCodec.encode(data).map(Some),
-            CompressionAlgorithm::Zstd { level } => ZstdCodec::new(level).encode(data).map(Some),
-        };
+    if data.len() < MIN_COMPRESSIBLE_SIZE {
+        return Ok(None);
     }
-    Ok(None)
+    let compressed = match settings.algorithm {
+        CompressionAlgorithm::Snappy => SnappyCodec.encode(data)?,
+        CompressionAlgorithm::Zstd { level } => ZstdCodec::new(level).encode(data)?,
+    };
+    if settings.is_worth_keeping(data.len(), compressed.data.len()) {
+        Ok(Some(compressed))
+    } else {
+        Ok(None)
+    }
 }
 
 pub fn decode_from_data_and_mnemonic(data_and_mnemonic: DataAndMnemonic) -> PyResult<Vec<u8>> {
