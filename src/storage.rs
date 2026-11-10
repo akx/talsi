@@ -2,7 +2,9 @@ use crate::data_codecs::{
     CompressionAlgorithm, decode_from_data_and_mnemonic, get_best_data_encoding,
 };
 use crate::py_codecs::{decode_to_python_from_data_and_mnemonic, get_best_py_encoding};
-use crate::typ::{CodecsBlob, DataAndMnemonic, DataAndMnemonics, StringOrByteString};
+use crate::typ::{
+    CodecsBlob, DataAndMnemonic, DataAndMnemonics, Payload, PyEncoded, StringOrByteString,
+};
 use crate::utils;
 use either::Either;
 use eyre::Context;
@@ -84,7 +86,7 @@ pub struct Storage {
 struct InternalInsertTriple {
     key: CowStr,
     codecs_blob: CodecsBlob,
-    value: Vec<u8>,
+    value: Payload,
 }
 
 struct InternalStoredRecord {
@@ -230,7 +232,7 @@ impl Storage {
             stmt.execute(params![
                 key.as_ref(),
                 codecs_blob.as_slice(),
-                data_encoded,
+                &**data_encoded,
                 now_ms,
                 expires_ms
             ])
@@ -522,7 +524,7 @@ impl Storage {
             .map_err(to_talsi_error)?;
         let expires_at = ttl_ms.map(|ttl| now + Duration::from_millis(ttl));
         let mut keys: Vec<CowStr> = Vec::new();
-        let mut python_values: Vec<DataAndMnemonic> = Vec::new();
+        let mut python_values: Vec<PyEncoded> = Vec::new();
         for (key, value) in values.bind(py).iter() {
             let key = key.extract::<StringOrByteString>()?;
             keys.push(string_or_bytestring_as_string(key)?);
@@ -538,7 +540,7 @@ impl Storage {
             python_values
                 .into_par_iter()
                 .map(
-                    |DataAndMnemonic {
+                    |PyEncoded {
                          data: py_enc_data,
                          codec: py_enc_mnemonic,
                      }| {
