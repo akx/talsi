@@ -1,3 +1,4 @@
+import os
 import sqlite3
 from collections import Counter
 
@@ -189,3 +190,53 @@ def test_zstd_level_validation(tmp_path):
     with pytest.raises(talsi.TalsiError) as exc_info:
         talsi.Storage(db_path, compression="zstd:abc")
     assert "Invalid zstd compression level" in str(exc_info.value)
+
+
+def _stored_codecs(db_path: str, namespace: str) -> dict[str, bytes]:
+    with sqlite3.connect(db_path) as conn:
+        return dict(conn.execute(f"SELECT key, codecs FROM tl_{namespace}"))
+
+
+@pytest.mark.parametrize("compression", ["snappy", "zstd"])
+@pytest.mark.parametrize(
+    ("threshold", "random_compressed", "text_compressed"),
+    [
+        (0.9, False, True),  # default: incompressible data is stored raw
+        (0.0, True, True),  # adapting disabled: always compress
+        (-1.0, True, True),
+        (1e-9, False, False),  # nothing compresses this well
+    ],
+)
+def test_compression_threshold(
+    tmp_path,
+    compression,
+    threshold,
+    random_compressed,
+    text_compressed,
+):
+    db_path = str(tmp_path / "threshold.db")
+    values = {
+        "random": os.urandom(64 * 1024),
+        "text": b"hello world " * 10000,
+        "small": b"tiny",
+    }
+    with talsi.Storage(
+        db_path,
+        compression=compression,
+        compression_threshold=threshold,
+    ) as storage:
+        storage.set_many("ns", values)
+        storage.set("ns", "random_single", values["random"])
+        assert storage.get_many("ns", list(values)) == values
+        assert storage.get("ns", "random_single") == values["random"]
+    codecs = _stored_codecs(db_path, "ns")
+    # Codec chains are the Python codec mnemonic, then any data codecs.
+    assert (len(codecs["random"]) > 1) == random_compressed
+    assert (len(codecs["random_single"]) > 1) == random_compressed
+    assert (len(codecs["text"]) > 1) == text_compressed
+    assert codecs["small"] == b"B"  # too small to ever compress
+
+
+def test_invalid_compression_threshold(tmp_path):
+    with pytest.raises(talsi.TalsiError, match="must be a number"):
+        talsi.Storage(str(tmp_path / "nan.db"), compression_threshold=float("nan"))

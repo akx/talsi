@@ -31,6 +31,11 @@ storage = talsi.Storage("mydb.db", compression="zstd")  # defaults to level 3
 storage = talsi.Storage("mydb.db", compression="zstd:1")  # fastest
 storage = talsi.Storage("mydb.db", compression="zstd:10")  # slower but better compression
 
+# Compressed data is only stored if it's at most `compression_threshold` (default 0.9)
+# times the size of the original; otherwise the data is stored uncompressed.
+# A threshold <= 0 always stores the compressed data.
+storage = talsi.Storage("mydb.db", compression_threshold=0.5)
+
 # Set and get values
 storage.set("namespace", "key", "value")
 value = storage.get("namespace", "key")
